@@ -1,4 +1,0 @@
-{"mode":"useprofile","path":"/tmp/test_profile"}
-{"mode":"updateprofile"}
-{"mode":"wakeup"}
-{"mode":"quit"}
