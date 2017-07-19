@@ -68,11 +68,11 @@ class PerformanceMode(RegressionMode):
         base_speed_aggregate = 0
 
         for i in xrange(0, self.args.scans):
-            test_uri_sets.append(self.run_test(self.test_app, self.url_set, profile=self.test_profile,
+            test_uri_sets.append(self.run_test(self.test_app, self.sources, profile=self.test_profile,
                                                prefs=self.args.prefs_test, get_info=True, get_certs=True,
                                                progress=True, return_only_errors=False))
 
-            base_uri_sets.append(self.run_test(self.base_app, self.url_set, profile=self.base_profile,
+            base_uri_sets.append(self.run_test(self.base_app, self.sources, profile=self.base_profile,
                                                prefs=self.args.prefs_base, get_info=True, get_certs=True,
                                                progress=True, return_only_errors=False))
 

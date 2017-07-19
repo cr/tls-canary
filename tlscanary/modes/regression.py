@@ -35,7 +35,7 @@ class RegressionMode(BaseMode):
         self.base_metadata = None
         self.test_profile = None
         self.base_profile = None
-        self.url_set = None
+        self.sources = None
 
     def setup(self):
         global logger
@@ -65,8 +65,8 @@ class RegressionMode(BaseMode):
         # Compile the set of URLs to test
         db = sdb.SourcesDB(self.args)
         logger.info("Reading `%s` host database" % self.args.source)
-        self.url_set = db.read(self.args.source).as_set()
-        logger.info("%d URLs in test set" % len(self.url_set))
+        self.sources = db.read(self.args.source)
+        logger.info("%d URLs in test set" % len(self.sources))
 
     def run(self):
         global logger
@@ -91,10 +91,20 @@ class RegressionMode(BaseMode):
         log = rldb.new_log()
         log.start(meta=meta)
 
-        error_set = self.run_regression_passes(self.module_dir, self.test_app, self.base_app)
+        limit = len(self.sources) if self.args.limit is None else self.args.limit
 
-        for rank, host, result in error_set:
-            log.log(result.as_dict())
+        next_chunk = self.sources.iter_chunks(chunk_size=limit / 20, min_chunk_size=1000)
+
+        while True:
+            host_set_chunk = next_chunk(as_set=True)
+            if host_set_chunk is None:
+                break
+
+            logger.info("Starting run on chunk of %d hosts" % len(host_set_chunk))
+
+            error_set = self.run_regression_passes(host_set_chunk)
+            for rank, host, result in error_set:
+                log.log(result.as_dict())
 
         meta["run_finish_time"] = datetime.datetime.utcnow().isoformat()
         self.save_profile(self.test_profile, "test_profile", log)
@@ -107,8 +117,7 @@ class RegressionMode(BaseMode):
         # self.save_profile("base_profile", self.start_time)
         pass
 
-    def run_regression_passes(self, module_dir, test_app, base_app):
-        del module_dir, test_app, base_app  # unused parameters
+    def run_regression_passes(self, host_set):
         global logger
 
         # Compile set of error URLs in three passes
@@ -118,9 +127,9 @@ class RegressionMode(BaseMode):
         # - Run new error set against baseline candidate
         # - Filter for errors from test candidate but not baseline
 
-        logger.info("Starting first pass with %d URLs" % len(self.url_set))
+        logger.info("Starting first pass with %d URLs" % len(host_set))
 
-        test_error_set = self.run_test(self.test_app, self.url_set, profile=self.test_profile,
+        test_error_set = self.run_test(self.test_app, host_set, profile=self.test_profile,
                                        prefs=self.args.prefs_test, progress=True)
         logger.info("First test candidate pass yielded %d error URLs" % len(test_error_set))
         logger.debug("First test candidate pass errors: %s" % ' '.join(["%d,%s" % (r, u) for r, u in test_error_set]))
