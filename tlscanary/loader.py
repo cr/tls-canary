@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def run(args, module_dir, tmp_dir):
+    global logger
 
     try:
         current_mode = modes.all_modes[args.mode](args, module_dir, tmp_dir)
@@ -23,6 +24,10 @@ def run(args, module_dir, tmp_dir):
         logger.critical("Unknown run mode `%s`. Choose one of: %s" % (args.mode, ", ".join(modes.all_mode_names)))
         sys.exit(5)
 
+    logger.debug("Running mode .setup()")
     current_mode.setup()
+    logger.debug("Running mode .run()")
     current_mode.run()
+    logger.debug("Running mode .teardown()")
     current_mode.teardown()
+    logger.debug("Mode finished")

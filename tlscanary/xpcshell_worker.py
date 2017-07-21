@@ -7,7 +7,6 @@ import logging
 import os
 from Queue import Queue, Empty
 import subprocess
-import sys
 from threading import Thread
 
 
@@ -80,19 +79,27 @@ class XPCShellWorker(object):
 
         if self.__profile is not None:
             logger.debug("Changing worker profile to `%s`" % self.__profile)
-            self.send(Command("useprofile", path=self.__profile))
-            response = self.wait()
-            if response.original_cmd["mode"] != "useprofile" or response.result != "ACK":
-                logger.critical("Worker failed to set profile `%s`" % self.__profile)
-                sys.exit(5)
+            if self.send(Command("useprofile", path=self.__profile)):
+                response = self.wait()
+            else:
+                # .wait() would wait forever if .send() was not successful
+                response = None
+            if response is None or response.original_cmd["mode"] != "useprofile" or response.result != "ACK":
+                logger.error("Worker failed to set profile `%s`" % self.__profile)
+                return False
 
         if self.__prefs is not None:
             logger.debug("Setting worker prefs to `%s`" % self.__prefs)
-            self.send(Command("setprefs", prefs=self.__prefs))
-            response = self.wait()
-            if response.original_cmd["mode"] != "setprefs" or response.result != "ACK":
-                logger.critical("Worker failed to set prefs `%s`" % self.__prefs)
-                sys.exit(5)
+            if self.send(Command("setprefs", prefs=self.__prefs)):
+                response = self.wait()
+            else:
+                # .wait() would wait forever if .send() was not successful
+                response = None
+            if response is None or response.original_cmd["mode"] != "setprefs" or response.result != "ACK":
+                logger.error("Worker failed to set prefs `%s`" % self.__prefs)
+                return False
+
+        return True
 
     def terminate(self):
         """Signal the worker process to quit"""
@@ -120,6 +127,8 @@ class XPCShellWorker(object):
             self.__worker_thread.stdin.flush()
         except IOError:
             logger.debug("Can't write to worker. Message `%s` wasn't heard." % cmd_string)
+            return False
+        return True
 
     def receive(self):
         """Read queued messages from worker. Returns [] if there were none."""

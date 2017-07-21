@@ -11,6 +11,7 @@ import zipfile
 
 from basemode import BaseMode
 from tlscanary.firefox_downloader import get_to_file
+import tlscanary.progress_logger as pr
 import tlscanary.sources_db as sdb
 
 
@@ -104,53 +105,79 @@ class SourceUpdateMode(BaseMode):
 
         # Chop unfiltered sources data into chunks and iterate over each
         # .iter_chunks() returns a generator method to call for next chunk
-        next_chunk = self.sources.iter_chunks(chunk_size=limit / 20, min_chunk_size=1000)
+        next_chunk = self.sources.iter_chunks(chunk_size=limit/50, min_chunk_size=1000)
         chunk_size = self.sources.chunk_size
 
-        # TODO: Remove this log line once progress reporting is done properly
-        logger.warning("Progress is reported per chunk of %d hosts, not overall" % self.sources.chunk_size)
+        src_len = len(self.sources)
+        progress = pr.ProgressLogger(total=limit, unit="hosts", average=30*60.0)
+        progress.start_reporting(20*60.0, 10*60.0)  # First update after 10 minutes, then every 20 minutes
 
-        while True:
-            hosts_to_go = max(0, limit - len(working_set))
-            # Check if we're done
-            if hosts_to_go == 0:
-                break
-            logger.info("%d hosts to go to complete the working set" % hosts_to_go)
+        try:
+            while True:
+                hosts_to_go = max(0, limit - len(working_set))
+                # Check if we're done
+                if hosts_to_go == 0:
+                    break
+                logger.info("%d hosts to go to complete the working set" % hosts_to_go)
 
-            # Shrink chunk if it contains way more hosts than required to complete the working set
-            #
-            # CAVE: This assumes that this is the last chunk we require. The downsized chunk
-            # is still 50% larger than required to complete the set to compensate for broken
-            # hosts. If the error rate in the chunk is greater than 50%, another chunk will be
-            # consumed, resulting in a gap of untested hosts between the end of this downsized
-            # chunk and the beginning of the next. Not too bad, but important to be aware of.
-            if chunk_size > hosts_to_go * 2:
-                chunk_size = min(chunk_size, hosts_to_go * 2)
-            pass_chunk = next_chunk(chunk_size, as_set=True)
+                # Shrink chunk if it contains way more hosts than required to complete the working set
+                #
+                # CAVE: This assumes that this is the last chunk we require. The downsized chunk
+                # is still 50% larger than required to complete the set to compensate for broken
+                # hosts. If the error rate in the chunk is greater than 50%, another chunk will be
+                # consumed, resulting in a gap of untested hosts between the end of this downsized
+                # chunk and the beginning of the next. Not too bad, but important to be aware of.
+                if chunk_size > hosts_to_go * 2:
+                    chunk_size = min(chunk_size, hosts_to_go * 2)
+                pass_chunk = next_chunk(chunk_size, as_set=True)
 
-            # Check if we ran out of data for completing the set
-            if pass_chunk is None:
-                logger.warning("Ran out of hosts to complete the working set")
-                break
-
-            # Run chunk through multiple passes of Firefox, leaving only persistent errors in the
-            # error set.
-            chunk_end = self.sources.chunk_offset
-            chunk_start = chunk_end - len(pass_chunk)
-            logger.info("Processing chunk of %d hosts from the unfiltered set (#%d to #%d)"
-                        % (chunk_end - chunk_start, chunk_start, chunk_end - 1))
-            pass_errors = pass_chunk
-            for _ in xrange(self.args.scans):
-                pass_errors = self.run_test(self.app, pass_errors, profile=self.profile, get_info=False,
-                                            get_certs=False, progress=True, return_only_errors=True)
-                if len(pass_errors) == 0:
+                # Check if we ran out of data for completing the set
+                if pass_chunk is None:
+                    logger.warning("Ran out of hosts to complete the working set")
                     break
 
-            logger.info("Error rate in chunk was %.1f%%"
-                        % (100.0 * float(len(pass_errors)) / float(chunk_end - chunk_start)))
+                # Run chunk through multiple passes of Firefox, leaving only persistent errors in the
+                # error set.
+                pass_chunk_size = len(pass_chunk)
+                chunk_end = self.sources.chunk_offset
+                chunk_start = chunk_end - pass_chunk_size
+                logger.info("Processing chunk of %d hosts from the unfiltered set (#%d to #%d)"
+                            % (chunk_end - chunk_start, chunk_start, chunk_end - 1))
+                pass_errors = pass_chunk
 
-            # Add all non-errors to the working set
-            working_set.update(pass_chunk.difference(pass_errors))
+                for i in xrange(self.args.scans):
+                    # First run is regular, every other run is overhead
+                    if i == 0:
+                        report_callback = None
+                    else:
+                        report_callback = progress.log_overhead
+
+                    pass_errors = self.run_test(self.app, pass_errors, profile=self.profile, get_info=False,
+                                                get_certs=False, return_only_errors=True,
+                                                report_callback=report_callback)
+                    len_pass_errors = len(pass_errors)
+
+                    # Log progress of first pass
+                    if i == 0:
+                        progress.log_completed(pass_chunk_size - len_pass_errors)
+                        progress.log_overhead(len_pass_errors)
+
+                    if len_pass_errors == 0:
+                        break
+
+                logger.info("Error rate in chunk was %.1f%%"
+                            % (100.0 * float(len(pass_errors)) / float(chunk_end - chunk_start)))
+
+                # Add all non-errors to the working set
+                working_set.update(pass_chunk.difference(pass_errors))
+
+        except KeyboardInterrupt:
+            logger.critical("Ctrl-C received")
+            progress.stop_reporting()
+            raise KeyboardInterrupt
+
+        finally:
+            progress.stop_reporting()
 
         final_src = sdb.Sources(self.sources.handle, is_default=self.sources.is_default)
         final_src.from_set(working_set)

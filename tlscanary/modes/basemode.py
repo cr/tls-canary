@@ -271,7 +271,7 @@ class BaseMode(object):
         log.meta["profiles"].append({"name": profile_name, "log_part": log_part})
 
     def run_test(self, app, url_list, profile=None, prefs=None, num_workers=None, n_per_worker=None, timeout=None,
-                 get_info=False, get_certs=False, progress=False, return_only_errors=True):
+                 get_info=False, get_certs=False, return_only_errors=True, report_callback=None):
 
         global logger
 
@@ -286,7 +286,7 @@ class BaseMode(object):
         try:
             results = wp.run_scans(app, list(url_list), profile=profile, prefs=prefs, num_workers=num_workers,
                                    targets_per_worker=n_per_worker, timeout=timeout,
-                                   progress=progress, get_certs=get_certs)
+                                   get_certs=get_certs, progress_callback=report_callback)
 
         except KeyboardInterrupt:
             logger.critical('User abort')

@@ -2,23 +2,21 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import datetime
 import logging
-from threading import Thread
 import time
 from worq.pool.thread import WorkerPool
 from worq import get_broker, get_queue, TaskSpace
 
-import progress_bar
 import xpcshell_worker as xw
 
 
 logger = logging.getLogger(__name__)
 ts = TaskSpace(__name__)
+pool = None
 
 
 def init(worq_url):
-    global logger, ts
+    global ts
     broker = get_broker(worq_url)
     broker.expose(ts)
     return broker
@@ -26,9 +24,17 @@ def init(worq_url):
 
 def start_pool(worq_url, num_workers=1, **kw):
     broker = init(worq_url)
-    pool = WorkerPool(broker, workers=num_workers)
-    pool.start(**kw)
-    return pool
+    new_pool = WorkerPool(broker, workers=num_workers)
+    new_pool.start(**kw)
+    return new_pool
+
+
+def stop():
+    global logger, pool
+    logger.debug("Stopping worker pool %s" % pool)
+    if pool is not None:
+        pool.stop()
+        pool = None
 
 
 class ScanResult(object):
@@ -113,15 +119,19 @@ def scan_urls(app, target_list, profile=None, prefs=None, get_certs=False, timeo
             results[result.host] = result
         if len(results) >= len(target_list):
             break
-        xpcw.send(wakeup_cmd)
-        time.sleep(0.1)
+        if xpcw.send(wakeup_cmd):
+            time.sleep(0.1)
+        else:
+            break
 
     if len(results) < len(target_list):
-        logger.warning("Worker dropped results, yielded %d instead of %d" % (len(results), len(target_list)))
+        logger.warning("Worker task dropped results, yielded %d instead of %d" % (len(results), len(target_list)))
 
     # Wind down the worker
     xpcw.send(xw.Command("quit"))
     xpcw.terminate()
+
+    logger.debug("Worker task finished, returning %d results" % len(results))
 
     return results
 
@@ -139,59 +149,10 @@ def __as_chunks(flat_list, chunk_size):
         yield flat_list[i:i + chunk_size]
 
 
-pool = None
-progress_thread = None
-progress_thread_running = False
-
-
-def progress_reporter(queue, multiplier, update_interval=60.0):
-    global logger, progress_thread_running
-
-    logger.debug("Progress reporter thread started")
-
-    overall_len = len(queue) * multiplier
-    next_update = datetime.datetime.now() + datetime.timedelta(seconds=update_interval)
-
-    progress = progress_bar.ProgressBar(0, overall_len, show_percent=True,
-                                        show_boundary=True, stats_window=60)
-
-    progress_thread_running = True
-    while progress_thread_running:
-        time.sleep(1)
-        urls_todo = len(queue) * multiplier
-        if urls_todo == 0:
-            break
-        urls_done = overall_len - urls_todo
-        progress.set(urls_done)
-        now = datetime.datetime.now()
-        if now >= next_update:
-            overall_rate, overall_rest_time, overall_eta, \
-                current_rate, current_rest_time, current_eta = progress.stats()
-            logger.info("%d URLs to go. Current rate %d URLs/minute, rest time %d minutes, ETA %s" % (
-                urls_todo,
-                round(current_rate * 60.0),
-                round(current_rest_time.seconds / 60.0),
-                current_eta.isoformat()))
-            next_update = now + datetime.timedelta(seconds=update_interval)
-
-    progress_thread_running = False
-    logger.debug("Progress reporter thread finished")
-
-
-def stop():
-        global pool, progress_thread, progress_thread_running
-        if progress_thread is not None:
-            progress_thread_running = False
-            progress_thread = None
-        if pool is not None:
-            pool.stop()
-            pool = None
-
-
 # CAVE: run_scans is not re-entrant due to use of global variables.
 def run_scans(app, target_list, profile=None, prefs=None, num_workers=4, targets_per_worker=50, worq_url="memory://",
-              progress=False, get_certs=False, timeout=10):
-    global pool, progress_thread, progress_thread_running
+              get_certs=False, timeout=10, progress_callback=None):
+    global logger, pool
 
     pool = start_pool(worq_url, timeout=1, num_workers=num_workers)
 
@@ -199,28 +160,46 @@ def run_scans(app, target_list, profile=None, prefs=None, num_workers=4, targets
     try:
         queue = get_queue(worq_url, target=__name__)
 
-        if progress:
-            progress_thread = Thread(target=progress_reporter, name="progress_reporter",
-                                     args=(queue, targets_per_worker))
-            progress_thread.daemon = True  # Thread dies with worker
-            progress_thread_running = False
-
         # Enqueue tasks to be executed in parallel
         scan_results = [queue.scan_urls(app, targets, profile=profile, prefs=prefs,
                                         get_certs=get_certs, timeout=timeout)
                         for targets in chunks]
         result = queue.collect(scan_results)
 
-        if progress:
-            progress_thread.start()
+        queue_len = len(queue)
+        logged_len = 0  # Required to correct for "overlogging" due to chunking
 
-        result.wait(timeout=2**60)
+        while True:
+            finished = result.wait(timeout=10)
+            current_queue_len = len(queue)
+            chunks_done = queue_len - current_queue_len
+            logger.debug("After queue wait: %d old - %d new = %d done" % (queue_len, current_queue_len, chunks_done))
+            queue_len = current_queue_len
+            # Check finished first to ensure that the final chunk is not logged,
+            # because the final chunk might not have the full chunk size.
+            if finished:
+                break
+            if progress_callback is not None and chunks_done > 0:
+                # We must assume the maximum chunk size here to calculate the number of results
+                progress_callback(chunks_done * targets_per_worker)
+                logged_len += chunks_done * targets_per_worker
 
     except KeyboardInterrupt:
+        logger.critical("Ctrl-C received. Winding down workers...")
         stop()
+        logger.debug("Signaled workers to quit")
         raise KeyboardInterrupt
 
     finally:
         stop()
+
+    # Log the results of the final chunk
+    if progress_callback is not None:
+        actual_len = len(result.value)
+        logger.debug("Chunkwise logging reported on %d results, actually received %d" % (logged_len, actual_len))
+        len_correction = actual_len - logged_len
+        if len_correction != 0:
+            logger.debug("Logging correction for %d results" % len_correction)
+            progress_callback(len_correction)
 
     return result.value
