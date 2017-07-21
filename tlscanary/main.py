@@ -203,13 +203,10 @@ def main(argv=None):
         logger.critical("\nUser interrupt. Quitting...")
         return 10
 
-    logger.info("Waiting for background threads to finish")
-
-    while True:
-        remaining_threads = threading.enumerate()
-        if len(remaining_threads) <= 1:
-            break
-        logger.debug("Remaining threads: %s" % remaining_threads)
-        time.sleep(2)
+    if len(threading.enumerate()) > 1:
+        logger.info("Waiting for background threads to finish")
+        while len(threading.enumerate()) > 1:
+            logger.debug("Remaining threads: %s" % threading.enumerate())
+            time.sleep(2)
 
     return 0
