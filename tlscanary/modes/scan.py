@@ -83,7 +83,7 @@ class ScanMode(BaseMode):
 
         info_uri_set = self.run_test(self.test_app, self.url_set, profile=self.test_profile,
                                      prefs=self.args.prefs, get_info=True,
-                                     get_certs=True, progress=True, return_only_errors=False)
+                                     get_certs=True, return_only_errors=False)
 
         for rank, host, result in info_uri_set:
             log.log(result.as_dict())
