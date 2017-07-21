@@ -144,6 +144,9 @@ class SourceUpdateMode(BaseMode):
                 pass_errors = pass_chunk
 
                 for i in xrange(self.args.scans):
+
+                    logger.info("Pass %d with %d hosts" % (i + 1, pass_chunk_size))
+
                     # First run is regular, every other run is overhead
                     if i == 0:
                         report_callback = None
@@ -164,7 +167,7 @@ class SourceUpdateMode(BaseMode):
                         break
 
                 logger.info("Error rate in chunk was %.1f%%"
-                            % (100.0 * float(len(pass_errors)) / float(chunk_end - chunk_start)))
+                            % (100.0 * float(len_pass_errors) / float(chunk_end - chunk_start)))
 
                 # Add all non-errors to the working set
                 working_set.update(pass_chunk.difference(pass_errors))
