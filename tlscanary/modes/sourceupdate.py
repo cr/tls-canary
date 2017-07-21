@@ -108,7 +108,6 @@ class SourceUpdateMode(BaseMode):
         next_chunk = self.sources.iter_chunks(chunk_size=limit/50, min_chunk_size=1000)
         chunk_size = self.sources.chunk_size
 
-        src_len = len(self.sources)
         progress = pr.ProgressLogger(total=limit, unit="hosts", average=30*60.0)
         progress.start_reporting(20*60.0, 10*60.0)  # First update after 10 minutes, then every 20 minutes
 
