@@ -375,7 +375,11 @@ class RunLog(object):
         if "r" in self.log_fh.mode:
             self.log_fh.seek(0)
             while True:
-                line = self.log_fh.readline()
+                try:
+                    line = self.log_fh.readline()
+                except EOFError:
+                    logger.debug("EOFError on log `%s`. Log is truncated." % self.handle)
+                    break
                 if line == '':
                     break
                 if not line.startswith("#"):
