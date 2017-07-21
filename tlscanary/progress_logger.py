@@ -111,7 +111,7 @@ class ProgressLogger(object):
         net_todo = self.total - self.completed
         gross_factor = 1.0 if self.completed == 0 else (self.completed + self.overhead) / self.completed
         gross_todo = net_todo * gross_factor
-        percent = 100.0 * self.completed / self.total
+        percent = min(100.0 * self.completed / self.total, 100.0)
         overhead_percent = 0.0 if self.completed == 0 else 100.0 * self.overhead / self.completed
 
         # Get current averaging window
@@ -122,7 +122,7 @@ class ProgressLogger(object):
             s = u""
             if self.show_percent:
                 s += u"%.0f%% " % percent
-            s += u"%d/%d" % (self.completed, self.total)
+            s += u"%d/%d" % (min(self.completed, self.total), self.total)
             s += u", %.0f%% overhead" % overhead_percent
             if self.show_speed:
                 s += u", --%s/s net" % self.unit
@@ -149,7 +149,7 @@ class ProgressLogger(object):
         s = u""
         if self.show_percent:
             s += u"%.0f%% " % percent
-        s += u"%d/%d" % (self.completed, self.total)
+        s += u"%d/%d" % (min(self.completed, self.total), self.total)
         s += u", %.1f%% overhead" % overhead_percent
         if self.show_speed:
             match = [
