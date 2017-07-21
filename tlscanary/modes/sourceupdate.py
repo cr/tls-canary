@@ -105,11 +105,10 @@ class SourceUpdateMode(BaseMode):
 
         # Chop unfiltered sources data into chunks and iterate over each
         # .iter_chunks() returns a generator method to call for next chunk
-        next_chunk = self.sources.iter_chunks(chunk_size=limit/50, min_chunk_size=1000)
+        next_chunk = self.sources.iter_chunks(chunk_size=1000)
         chunk_size = self.sources.chunk_size
 
-        progress = pr.ProgressLogger(total=limit, unit="hosts", average=30*60.0)
-        progress.start_reporting(20*60.0, 10*60.0)  # First update after 10 minutes, then every 20 minutes
+        progress = pr.ProgressLogger(total=limit, unit="hosts", average=60*60.0)
 
         try:
             while True:
@@ -170,13 +169,12 @@ class SourceUpdateMode(BaseMode):
                 # Add all non-errors to the working set
                 working_set.update(pass_chunk.difference(pass_errors))
 
+                # Log progress after every chunk
+                logger.info(str(progress))
+
         except KeyboardInterrupt:
             logger.critical("Ctrl-C received")
-            progress.stop_reporting()
             raise KeyboardInterrupt
-
-        finally:
-            progress.stop_reporting()
 
         final_src = sdb.Sources(self.sources.handle, is_default=self.sources.is_default)
         final_src.from_set(working_set)
