@@ -145,7 +145,7 @@ class SourceUpdateMode(BaseMode):
 
                 for i in xrange(self.args.scans):
 
-                    logger.info("Pass %d with %d hosts" % (i + 1, pass_chunk_size))
+                    logger.info("Pass %d with %d hosts" % (i + 1, len(pass_errors)))
 
                     # First run is regular, every other run is overhead
                     if i == 0:
