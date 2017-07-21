@@ -116,7 +116,8 @@ class RegressionMode(BaseMode):
             progress.stop_reporting()
             raise KeyboardInterrupt
 
-        progress.stop_reporting()
+        finally:
+            progress.stop_reporting()
 
         meta["run_finish_time"] = datetime.datetime.utcnow().isoformat()
         self.save_profile(self.test_profile, "test_profile", log)

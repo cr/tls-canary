@@ -8,7 +8,7 @@ import pkg_resources as pkgr
 import sys
 
 from basemode import BaseMode
-import tlscanary.report as report
+import tlscanary.progress_logger as pr
 import tlscanary.runlog as rl
 import tlscanary.sources_db as sdb
 
@@ -29,10 +29,10 @@ class ScanMode(BaseMode):
         # Define instance attributes for later use
         self.log = None
         self.start_time = None
-        self.url_set = None
         self.test_profile = None
         self.test_app = None
         self.test_metadata = None
+        self.sources = None
 
     def setup(self):
         global logger
@@ -44,21 +44,20 @@ class ScanMode(BaseMode):
         elif self.args.base is not None:
             logger.debug("Ignoring base build parameter")
 
-        # Compile the set of URLs to test
-        db = sdb.SourcesDB(self.args)
-        logger.info("Reading `%s` host database" % self.args.source)
-        self.url_set = db.read(self.args.source).as_set()
-        logger.info("%d URLs in test set" % len(self.url_set))
-
-        # Create custom profile
-        self.test_profile = self.make_profile("test_profile")
-
         # Download app and extract metadata
-        logger.info("Starting pass with %d URLs" % len(self.url_set))
         self.test_app = self.get_test_candidate(self.args.test)
         self.test_metadata = self.collect_worker_info(self.test_app)
         logger.info("Testing Firefox %s %s scan run" %
                     (self.test_metadata["app_version"], self.test_metadata["branch"]))
+
+        # Create custom profile
+        self.test_profile = self.make_profile("test_profile")
+
+        # Compile the set of hosts to test
+        db = sdb.SourcesDB(self.args)
+        logger.info("Reading `%s` host database" % self.args.source)
+        self.sources = db.read(self.args.source)
+        logger.info("%d hosts in test set" % len(self.sources))
 
     def run(self):
         global logger
@@ -80,13 +79,37 @@ class ScanMode(BaseMode):
         rldb = rl.RunLogDB(self.args)
         log = rldb.new_log()
         log.start(meta=meta)
+        progress = pr.ProgressLogger(total=len(self.sources), unit="hosts")
+        progress.start_reporting(300, 60)  # First update after 1 minute, then every 5 minutes
 
-        info_uri_set = self.run_test(self.test_app, self.url_set, profile=self.test_profile,
-                                     prefs=self.args.prefs, get_info=True,
-                                     get_certs=True, return_only_errors=False)
+        limit = len(self.sources) if self.args.limit is None else self.args.limit
 
-        for rank, host, result in info_uri_set:
-            log.log(result.as_dict())
+        # Split work into 20 chunks to conserve memory, but make no chunk smaller than 1000 hosts
+        next_chunk = self.sources.iter_chunks(chunk_size=limit/20, min_chunk_size=1000)
+
+        try:
+            while True:
+                host_set_chunk = next_chunk(as_set=True)
+                if host_set_chunk is None:
+                    break
+
+                logger.info("Starting scan of chunk of %d hosts" % len(host_set_chunk))
+
+                info_uri_set = self.run_test(self.test_app, host_set_chunk, profile=self.test_profile,
+                                             prefs=self.args.prefs, get_info=True,
+                                             get_certs=True, return_only_errors=False,
+                                             report_callback=progress.log_completed)
+
+                for rank, host, result in info_uri_set:
+                    log.log(result.as_dict())
+
+        except KeyboardInterrupt:
+            logger.critical("Ctrl-C received")
+            progress.stop_reporting()
+            raise KeyboardInterrupt
+
+        finally:
+            progress.stop_reporting()
 
         meta["run_finish_time"] = datetime.datetime.utcnow().isoformat()
         self.save_profile(self.test_profile, "test_profile", log)
