@@ -5,14 +5,14 @@
 from nose.tools import *
 import time
 
-import tlscanary.progress_logger as pr
+import tlscanary.progress as pr
 
 
 def test_progress_logger_instance():
-    """ProgressLogger does its thing"""
+    """ProgressTracker does its thing"""
 
-    progress = pr.ProgressLogger(100, unit="bubbles")
-    assert_true(type(progress) is pr.ProgressLogger, "ProgressLogger can be instantiated")
+    progress = pr.ProgressTracker(100, unit="bubbles")
+    assert_true(type(progress) is pr.ProgressTracker, "ProgressTracker can be instantiated")
 
     assert_true(len(str(progress)) > 0, "can be turned into string (even when empty)")
 

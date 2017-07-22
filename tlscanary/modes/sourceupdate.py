@@ -11,7 +11,7 @@ import zipfile
 
 from basemode import BaseMode
 from tlscanary.firefox_downloader import get_to_file
-import tlscanary.progress_logger as pr
+import tlscanary.progress as pr
 import tlscanary.sources_db as sdb
 
 
@@ -108,7 +108,7 @@ class SourceUpdateMode(BaseMode):
         next_chunk = self.sources.iter_chunks(chunk_size=1000)
         chunk_size = self.sources.chunk_size
 
-        progress = pr.ProgressLogger(total=limit, unit="hosts", average=60*60.0)
+        progress = pr.ProgressTracker(total=limit, unit="hosts", average=60 * 60.0)
 
         try:
             while True:

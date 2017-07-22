@@ -9,7 +9,7 @@ import time
 logger = logging.getLogger(__name__)
 
 
-class ProgressLogger(object):
+class ProgressTracker(object):
     """Class that implements progress tracking"""
 
     def __init__(self, total, unit=None, percent=True, speed=True, eta=True, average=5*60.0):
@@ -184,7 +184,7 @@ class ProgressLogger(object):
 
         if self.logger_thread is None:
             logger.debug("Starting progress logger thread")
-            self.logger_thread = ProgressLoggerThread(self, first_interval, interval)
+            self.logger_thread = ProgressLogger(self, first_interval, interval)
             self.logger_thread.setName("Progress")
             self.logger_thread.daemon = True  # Thread dies with worker
             self.logger_thread.start()
@@ -207,18 +207,18 @@ class ProgressLogger(object):
                 self.logger_thread = None
 
 
-class ProgressLoggerThread(threading.Thread):
+class ProgressLogger(threading.Thread):
     """Progress logger thread that logs progress updates"""
 
     def __init__(self, pr, first_interval, regular_interval):
         """
         Constructor
 
-        :param pr: ProgressLogger instance to monitor
+        :param pr: ProgressTracker instance to monitor
         :param first_interval: float seconds before first log update
         :param regular_interval: float seconds between log update
         """
-        super(ProgressLoggerThread, self).__init__()
+        super(ProgressLogger, self).__init__()
         self.pr = pr
         self.first_interval = first_interval
         self.regular_interval = regular_interval
@@ -245,7 +245,7 @@ class ProgressLoggerThread(threading.Thread):
         """
         global logger
 
-        logger.debug("ProgressLoggerThread starting")
+        logger.debug("ProgressLogger thread starting")
         update_time = self.__update_time()
         next_update = update_time.next()
         while not self.__quit:
@@ -255,7 +255,7 @@ class ProgressLoggerThread(threading.Thread):
                 logger.info(str(self.pr))
                 self.updated_at = now
                 next_update = update_time.next()
-        logger.debug("ProgressLoggerThread exiting")
+        logger.debug("ProgressLogger thread exiting")
 
     def quit(self):
         """

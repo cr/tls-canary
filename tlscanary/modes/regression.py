@@ -9,7 +9,7 @@ import pkg_resources as pkgr
 import sys
 
 from basemode import BaseMode
-import tlscanary.progress_logger as pr
+import tlscanary.progress as pr
 import tlscanary.runlog as rl
 import tlscanary.sources_db as sdb
 
@@ -90,7 +90,7 @@ class RegressionMode(BaseMode):
         rldb = rl.RunLogDB(self.args)
         log = rldb.new_log()
         log.start(meta=meta)
-        progress = pr.ProgressLogger(total=len(self.sources), unit="hosts")
+        progress = pr.ProgressTracker(total=len(self.sources), unit="hosts")
         progress.start_reporting(300, 60)  # First update after 1 minute, then every 5 minutes
 
         limit = len(self.sources) if self.args.limit is None else self.args.limit
