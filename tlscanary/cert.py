@@ -14,7 +14,7 @@ class Cert(object):
 
     def __init__(self, data):
         if type(data) == list:
-            data= ''.join([chr(x) for x in data])
+            data = ''.join([chr(x) for x in data])
         if type(data) != str:
             raise Exception("data must be string or list of uint8")
         self.__raw_data = data

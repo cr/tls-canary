@@ -72,4 +72,3 @@ def extract(archive_file, workdir, cache_timeout=24*60*60, use_cache=True):
     os.chmod(app.exe, stat.S_IREAD | stat.S_IEXEC | stat.S_IWUSR)
 
     return app
-
