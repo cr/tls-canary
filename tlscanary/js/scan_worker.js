@@ -269,33 +269,36 @@ Command.prototype.send_response = function _report_result(success, result) {
 };
 
 Command.prototype.handle = function _handle() {
-    switch (this.mode) {
+	// Every command must be acknowledged with result "ACK,n"
+	// where n is the number of pending command responses.
+	switch (this.mode) {
         case "info":
+            this.send_response(true, "ACK,1");
             this.send_response(true, get_runtime_info());
             break;
         case "useprofile":
             set_profile(this.args.path);
-            this.send_response(true, "ACK");
+            this.send_response(true, "ACK,0");
             break;
         case "setprefs":
             set_prefs(this.args.prefs);
-            this.send_response(true, "ACK");
+            this.send_response(true, "ACK,0");
             break;
         case "scan":
             // .bind is required for callback to avoid
             // 'this is undefined' when called from request handlers.
             scan_host(this.args, this.send_response.bind(this));
-            this.send_response(true, "ACK");
+            this.send_response(true, "ACK,1");
             break;
         case "quit":
             script_done = true;
             // Intentional fall-through
         case "wakeup":
             while (main_thread.hasPendingEvents()) main_thread.processNextEvent(true);
-            this.send_response(true, "ACK");
+            this.send_response(true, "ACK,0");
             break;
         default:
-            this.send_response(false, "Unknown command mode: " + this.mode);
+            this.send_response(false, "ACK,0");
     }
 };
 

@@ -18,7 +18,7 @@ import tlscanary.firefox_extractor as fe
 import tlscanary.one_crl_downloader as one_crl
 import tlscanary.sources_db as sdb
 import tlscanary.worker_pool as wp
-import tlscanary.xpcshell_worker as xw
+import tlscanary.xpcshell_celery_worker as xw
 
 
 logger = logging.getLogger(__name__)
@@ -203,8 +203,9 @@ class BaseMode(object):
     def collect_worker_info(app):
         worker = xw.XPCShellWorker(app)
         worker.spawn()
-        worker.send(xw.Command("info"))
-        result = worker.wait().result
+        info_cmd = xw.Command("info")
+        worker.send(info_cmd)
+        result = info_cmd.get_result().result
         worker.terminate()
         # Add convenience shortcuts and metadata not returned by worker
         result["nss_version"] = "NSS %s" % result["nssInfo"]["NSS_Version"]

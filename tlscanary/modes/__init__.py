@@ -8,8 +8,10 @@ import regression
 import log
 import scan
 import sourceupdate
+import worker
+import cscan
 
-__all__ = ["log", "performance", "regression", "scan", "sourceupdate"]
+__all__ = ["log", "performance", "regression", "scan", "sourceupdate", "worker", "cscan"]
 
 
 def __subclasses_of(cls):

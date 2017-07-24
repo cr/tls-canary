@@ -33,8 +33,9 @@ def test_firefox_download_dummy():
     global test_app, test_archive
     # Get ourselves a Firefox app for the local platform.
     fdl = fd.FirefoxDownloader(tmp_dir)
-    test_archive = fdl.download("nightly", use_cache=True)
-    test_app = fe.extract(test_archive, tmp_dir)
+    # test_archive = fdl.download("nightly", use_cache=True)
+    # test_app = fe.extract(test_archive, tmp_dir)
+    test_app = fe.extract("/Users/cruetten/.tlscanary/cache/firefox-nightly_osx.dmg", tmp_dir)
 
 
 def setup_package():
