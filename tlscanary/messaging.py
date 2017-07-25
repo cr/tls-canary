@@ -117,19 +117,24 @@ class GlobalDispatcher(Thread):
         The method can be called from the main process context only.
 
         :param receiver_id: hashable object
-        :param event_id: hashable object
+        :param event_id: hashable object or list thereof
         :return: None
         """
         logger.debug("Registering receiver %s as listening to %s" % (repr(receiver_id), repr(event_id)))
+        if type(event_id) is list or type(event_id) is tuple:
+            event_ids = event_id
+        else:
+            event_ids = [event_id]
         if receiver_id not in self.receivers:
             logger.error("Unable to register unknown receiver %s as listening" % repr(receiver_id))
             return
         with self.listeners_lock:
-            if event_id not in self.listeners:
-                self.listeners[event_id] = [receiver_id]
-            else:
-                if receiver_id not in self.listeners[event_id]:
-                    self.listeners[event_id].append(receiver_id)
+            for event_id in event_ids:
+                if event_id not in self.listeners:
+                    self.listeners[event_id] = [receiver_id]
+                else:
+                    if receiver_id not in self.listeners[event_id]:
+                        self.listeners[event_id].append(receiver_id)
 
     # This can be called from the main process context only
     def remove_listener(self, receiver_id, event_id):
@@ -142,16 +147,21 @@ class GlobalDispatcher(Thread):
         The method can be called from the main process context only.
 
         :param receiver_id: hashable object
-        :param event_id:  hashable object
+        :param event_id:  hashable object or list thereof
         :return: None
         """
         logger.debug("Removing %s as listener for %s" % (repr(receiver_id), repr(event_id)))
+        if type(event_id) is list or type(event_id) is tuple:
+            event_ids = event_id
+        else:
+            event_ids = [event_id]
         if receiver_id not in self.receivers:
             logger.error("Unable to remove listeners for unknown receiver %s" % repr(receiver_id))
             return
         with self.listeners_lock:
-            if event_id in self.listeners:
-                self.listeners[event_id] = filter(lambda r: r != receiver_id, self.listeners[event_id])
+            for event_id in event_ids:
+                if event_id in self.listeners:
+                    self.listeners[event_id] = filter(lambda r: r != receiver_id, self.listeners[event_id])
 
     # This must run in the main process context
     def run(self):
@@ -197,6 +207,15 @@ global_dispatcher = GlobalDispatcher()
 global_dispatcher.start()
 
 
+def is_running():
+    """
+    Check whether the message broker is active
+
+    :return: bool
+    """
+    return global_dispatcher.is_alive()
+
+
 # This can be safely called from every subprocess context
 def dispatch(event):
     """
@@ -227,7 +246,7 @@ def create_receiver(receiver_id=None):
     :return: (receiver_id or int, multiprocessing.Queue)
     """
     if receiver_id is None:
-        receiver_id = rand()*2**55  # Chances of collision are rather unlikely
+        receiver_id = int(rand() * 2**53)  # Chances of collisions are rather slim
     receiver_queue = global_dispatcher.add_receiver(receiver_id)
     return receiver_id, receiver_queue
 
@@ -248,7 +267,7 @@ def remove_receiver(receiver_id):
 
 
 # This can be safely called from every subprocess context
-def start_listening(receiver_id, event_ids):
+def start_listening(receiver_id, event_id):
     """
     Register an event receiver's ID for listening to a list of event IDs.
     After this, all events that match the registered IDs will be dispatched
@@ -258,32 +277,26 @@ def start_listening(receiver_id, event_ids):
     The method is safe to be called from any process context.
 
     :param receiver_id: hashable object
-    :param event_ids: hashable object or list thereof
+    :param event_id: hashable object or list thereof
     :return: None
     """
-    if type(event_ids) is not list:
-        event_ids = [event_ids]
-    for event_id in event_ids:
-        message = {"receiver_id": receiver_id, "event_id": event_id}
-        dispatch(Event("start_listening", message))
+    message = {"receiver_id": receiver_id, "event_id": event_id}
+    dispatch(Event("start_listening", message))
 
 
 # This can be safely called from every subprocess context
-def stop_listening(receiver_id, event_ids):
+def stop_listening(receiver_id, event_id):
     """
     Stop listening to to given event ID or IDs
 
     The method is safe to be called from any process context.
 
     :param receiver_id: hashable object
-    :param event_ids: hashable object or list thereof
+    :param event_id: hashable object or list thereof
     :return: None
     """
-    if type(event_ids) is not list:
-        event_ids = [event_ids]
-    for event_id in event_ids:
-        message = {"receiver_id": receiver_id, "event_id": event_id}
-        dispatch(Event("stop_listening", message))
+    message = {"receiver_id": receiver_id, "event_id": event_id}
+    dispatch(Event("stop_listening", message))
 
 
 class MessagingProcess(Process):
@@ -336,10 +349,10 @@ class MessagingProcess(Process):
         Tell the global event dispatcher to stop dispatching specified event IDs
         to the process' event receiver queue.
 
-        :param event_id: hashable object
+        :param event_id: hashable object or list thereof
         :return: None
         """
-        start_listening(self.__receiver_id, event_id)
+        stop_listening(self.__receiver_id, event_id)
 
     def stop_events(self):
         """
