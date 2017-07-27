@@ -8,10 +8,6 @@ const { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
 
 const DEFAULT_TIMEOUT = 10000;
 
-// This is a global random ID that is sent with every message to the Python world
-const worker_id = Math.floor(Math.random() * 2**64);
-
-
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/NetUtil.jsm");
@@ -19,6 +15,25 @@ Cu.import("resource://gre/modules/AppConstants.jsm");
 
 const nsINSSErrorsService = Ci.nsINSSErrorsService;
 let nssErrorsService = Cc['@mozilla.org/nss_errors_service;1'].getService(nsINSSErrorsService);
+
+
+function uuid4() {
+  function rnd(bits) {
+    return Math.floor((1 + Math.random()) * 2**bits).toString(16).substring(1);
+  }
+  return `${rnd(32)}-${rnd(16)}-${rnd(16)}-${rnd(16)}-${rnd(48)}`;
+}
+
+
+// This is a global worker ID that is sent with every message to the Python world
+// It can be overridden by the `setworkerid` command. The Python world will usually
+// set this to a UUID1 string to synchronize the two worlds.
+let worker_id = uuid4();
+
+
+function set_worker_id(id) {
+    worker_id = id;
+}
 
 
 function get_runtime_info() {
@@ -272,6 +287,10 @@ Command.prototype.handle = function _handle() {
 	// Every command must be acknowledged with result "ACK,n"
 	// where n is the number of pending command responses.
 	switch (this.mode) {
+        case "setid":
+            set_worker_id(this.args.id);
+            this.send_response(true, "ACK,0");
+            break;
         case "info":
             this.send_response(true, "ACK,1");
             this.send_response(true, get_runtime_info());
