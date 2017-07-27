@@ -3,7 +3,7 @@
 import logging
 from multiprocessing import Lock, Process, Queue
 from threading import Thread
-from random import random as rand
+from uuid import uuid1
 
 
 logger = logging.getLogger(__name__)
@@ -216,7 +216,7 @@ def is_running():
     return global_dispatcher.is_alive()
 
 
-# This can be safely called from every subprocess context
+# This can be safely called from any subprocess context
 def dispatch(event):
     """
     Dispatch an Event object to the global event dispatcher's queue.
@@ -238,7 +238,7 @@ def create_receiver(receiver_id=None):
     and return associated receiver ID and receiver queue object that
     events will be dispatched to.
 
-    If no receiver ID is given, a random int ID will be generated.
+    If no receiver ID is given, a random UUID will be generated.
 
     The method can be called from the main process context only.
 
@@ -246,12 +246,12 @@ def create_receiver(receiver_id=None):
     :return: (receiver_id or int, multiprocessing.Queue)
     """
     if receiver_id is None:
-        receiver_id = int(rand() * 2**53)  # Chances of collisions are rather slim
+        receiver_id = uuid1()
     receiver_queue = global_dispatcher.add_receiver(receiver_id)
     return receiver_id, receiver_queue
 
 
-# This can be safely called from every subprocess context
+# This can be safely called from any subprocess context
 def remove_receiver(receiver_id):
     """
     Unregister a receiver ID with the global event dispatcher and have it
@@ -266,7 +266,7 @@ def remove_receiver(receiver_id):
     dispatch(Event("remove_receiver", message))
 
 
-# This can be safely called from every subprocess context
+# This can be safely called from any subprocess context
 def start_listening(receiver_id, event_id):
     """
     Register an event receiver's ID for listening to a list of event IDs.
@@ -284,7 +284,7 @@ def start_listening(receiver_id, event_id):
     dispatch(Event("start_listening", message))
 
 
-# This can be safely called from every subprocess context
+# This can be safely called from any subprocess context
 def stop_listening(receiver_id, event_id):
     """
     Stop listening to to given event ID or IDs
@@ -308,6 +308,8 @@ class MessagingProcess(Process):
 
         It registers a unique event receiver queue with the global event
         dispatcher, but otherwise it works just like multiprocessing.Process.
+
+        Messaging sub-processes must be created from the main process.
         """
         super(MessagingProcess, self).__init__(*args, **kwargs)
         self.__receiver_id, self.__event_queue = create_receiver()
@@ -360,6 +362,84 @@ class MessagingProcess(Process):
         this process' receiver ID and its associated queue from its registry.
 
         It is imperative that this is called before the process ends. Otherwise
+        the global event dispatcher will accumulate dead receivers and listeners
+        in its registry that hog memory and slow down the dispatcher.
+
+        :return: None
+        """
+        remove_receiver(self.__receiver_id)
+
+    @staticmethod
+    def dispatch(event):
+        """
+        Dispatch event to the global event dispatcher's event queue
+
+        :param event: messaging.Event
+        :return: None
+        """
+        dispatch(event)
+
+
+class MessagingThread(Thread):
+    """A messaging-enabled convenience wrapper for threading.Thread"""
+
+    def __init__(self, *args, **kwargs):
+        """
+        MessagingThread constructor
+
+        Must be called from the main process.
+        """
+        super(MessagingThread, self).__init__(*args, **kwargs)
+        self.__receiver_id, self.__event_queue = create_receiver()
+
+    def events_pending(self):
+        """
+        Return whether there are pending events in the event receiver queue
+
+        :return: bool
+        """
+        return not self.__event_queue.empty()
+
+    def receive(self, block=True, timeout=None):
+        """
+        Get an event from the event receiver queue
+
+        :param block: bool
+        :param timeout: float
+        :return: messaging.Event
+        """
+        return self.__event_queue.get(block=block, timeout=timeout)
+
+    def start_listening(self, event_id):
+        """
+        Register thread as listening to the given event ID or IDs.
+
+        After this, you will start seeing events with the respective IDs
+        start showing up in the thread' event receiver queue.
+
+        See MessagingThread.receive()
+
+        :param event_id: hashable object or list thereof
+        :return: None
+        """
+        start_listening(self.__receiver_id, event_id)
+
+    def stop_listening(self, event_id):
+        """
+        Tell the global event dispatcher to stop dispatching specified event IDs
+        to the thread' event receiver queue.
+
+        :param event_id: hashable object or list thereof
+        :return: None
+        """
+        stop_listening(self.__receiver_id, event_id)
+
+    def stop_events(self):
+        """
+        Tell the global message dispatcher to purge any references to
+        this thread' receiver ID and its associated queue from its registry.
+
+        It is imperative that this is called before the thread ends. Otherwise
         the global event dispatcher will accumulate dead receivers and listeners
         in its registry that hog memory and slow down the dispatcher.
 
