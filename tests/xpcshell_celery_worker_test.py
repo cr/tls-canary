@@ -4,6 +4,7 @@
 
 from nose import SkipTest
 from nose.tools import *
+from Queue import Empty
 from time import sleep
 
 import tests
@@ -97,6 +98,26 @@ def test_xpcshell_celery_worker():
     assert_false(ww.helpers_running(), "second worker's helpers terminate after quit command")
 
 
+worker = None
+receiver_id = None
+receiver_queue = None
+
+
+def messaging_setup():
+    global receiver_id, receiver_queue, worker
+    receiver_id, receiver_queue = msg.create_receiver()
+    worker = xw.XPCShellWorker(tests.test_app, events=True)
+    worker.spawn()
+
+
+def messaging_teardown():
+    """Teardown must terminate worker process and event handler thread, else nosetests will hang"""
+    worker.terminate()
+    msg.dispatch(msg.Event("quit"))
+    msg.remove_receiver(receiver_id)
+
+
+@with_setup(messaging_setup, messaging_teardown)
 def test_xpcshell_celery_messaging_worker():
     """XPCShell celery messaging worker runs and is responsive to messages"""
 
@@ -104,23 +125,32 @@ def test_xpcshell_celery_messaging_worker():
     if tests.test_app is None:
         raise SkipTest("XPCShell messaging worker can not be tested on this platform")
 
-    # Spawn a worker
-    w = xw.XPCShellWorker(tests.test_app, events=True)
-    w.spawn()
-
-    receiver_id, receiver_queue = msg.create_receiver()
-
     sleep(0.1)
     cmd = xw.Command("info", response_event=True)
     # Responses will be sent as events with ID identical to command ID
     msg.start_listening(receiver_id, cmd.id)
-    msg.dispatch(msg.Event("command:%s" % w.id, cmd.as_dict()))
+    msg.dispatch(msg.Event("command:%s" % worker.id, cmd))
 
-    ack = receiver_queue.get(timeout=1)
-    print ack.id, ack.message.as_dict()
+    try:
+        ack_event = receiver_queue.get(timeout=2)
+    except Empty:
+        assert_true(False, "info command is acknowledged")
+        return  # to silence warning about unassigned ack
+    assert_true(type(ack_event) is msg.Event, "ACK event is delivered as Event object")
+    ack = ack_event.message
+    assert_true(type(ack) is xw.Response, "ACK event message contains Response object")
+    assert_true(ack.is_ack(), "first event is an ACK")
+    assert_equal(ack.results_pending(), 1, "info ACK announces one pending response")
 
-    info = receiver_queue.get(timeout=1)
-    print info.id, info.message.as_dict()
-
-    msg.dispatch(msg.Event("quit"))
-    w.terminate()
+    try:
+        info_event = receiver_queue.get(timeout=2)
+    except Empty:
+        assert_true(False, "info command receives result")
+        return  # to silence warning about unassigned info
+    assert_true(type(info_event) is msg.Event, "info response event is delivered as Event object")
+    info = info_event.message
+    assert_true(type(info) is xw.Response, "info event message contains Response object")
+    assert_false(info.is_ack(), "second event is not an ACK")
+    assert_true(info.results_pending() is None, "non-ACK does not announce pending responses")
+    assert_equal(info.original_cmd["mode"], "info", "info response responds to info command")
+    assert_true("appConstants" in info.result, "info response looks legitimate")

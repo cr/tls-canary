@@ -255,7 +255,7 @@ def create_receiver(receiver_id=None):
 def remove_receiver(receiver_id):
     """
     Unregister a receiver ID with the global event dispatcher and have it
-    delete any associatd event listener registrations.
+    delete any associated event listener registrations.
 
     The method is safe to be called from any process context.
 

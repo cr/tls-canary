@@ -91,8 +91,8 @@ class WakeupHandler(msg.MessagingThread):
                 response = self.worker.response_queue.get(timeout=0.05)
 
                 # Respond via event if the original command had `response_event` argument set
-                if "response_event" in response.original_cmd["args"] \
-                        and response.original_cmd["args"]["response_event"]:
+                if response.event_requested():
+                    # Response objects can be pickled, so dispatching directly
                     self.dispatch(msg.Event(response.original_cmd["id"], response))
                     # If an event response was requested, don't serve command response queues
                     continue
@@ -136,10 +136,10 @@ class EventHandler(msg.MessagingThread):
         while True:
             event = self.receive()
             if event.id.startswith("command:"):
-                cmd = Command(event.message)
+                cmd = event.message  # Command() objects come pickled
                 self.worker.send(cmd, set_pending=False)
                 if "response_event" not in cmd.args:
-                    logger.warning("Command `%s` will not generate a response event" % cmd)
+                    logger.warning("Command `%s` will not generate a response event" % str(cmd))
             elif event.id == "quit":
                 break
         self.stop_events()
@@ -348,8 +348,15 @@ class Command(object):
         else:
             raise Exception("Argument must be mode string or dict with command specs")
 
-        self.ack_queue = Queue(maxsize=1)  # There will be one ACK
-        self.results = Queue(maxsize=1)  # There will be at most one result
+        # Do not init queues when communicating via events. First, they can't be pickled
+        # to be sent as an event, and second, they won't be served anyway.
+        if "response_event" in kwargs and kwargs["response_event"]:
+            self.ack_queue = None
+            self.results = None
+        else:
+            self.ack_queue = Queue(maxsize=1)  # There will be one ACK
+            self.results = Queue(maxsize=1)  # There will be at most one result
+
         self.results_pending = 0
 
     def put_ack(self, response):
@@ -417,6 +424,16 @@ class Response(object):
             return self.result.startswith("ACK")
         except AttributeError:
             return False
+
+    def results_pending(self):
+        if self.is_ack():
+            return int(self.result[4:])
+        else:
+            # None means: we don't know
+            return None
+
+    def event_requested(self):
+        return "response_event" in self.original_cmd["args"] and self.original_cmd["args"]["response_event"]
 
     def as_dict(self):
         return {
