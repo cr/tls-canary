@@ -302,7 +302,7 @@ def stop_listening(receiver_id, event_id):
 class MessagingProcess(Process):
     """Wrapper for the Process class that supports IPC messaging"""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, receiver_id=None, *args, **kwargs):
         """
         MessagingProcess constructor
 
@@ -312,7 +312,7 @@ class MessagingProcess(Process):
         Messaging sub-processes must be created from the main process.
         """
         super(MessagingProcess, self).__init__(*args, **kwargs)
-        self.__receiver_id, self.__event_queue = create_receiver()
+        self.__receiver_id, self.__event_queue = create_receiver(receiver_id)
 
     def events_pending(self):
         """
@@ -383,14 +383,14 @@ class MessagingProcess(Process):
 class MessagingThread(Thread):
     """A messaging-enabled convenience wrapper for threading.Thread"""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, receiver_id=None, *args, **kwargs):
         """
         MessagingThread constructor
 
         Must be called from the main process.
         """
         super(MessagingThread, self).__init__(*args, **kwargs)
-        self.__receiver_id, self.__event_queue = create_receiver()
+        self.__receiver_id, self.__event_queue = create_receiver(receiver_id)
 
     def events_pending(self):
         """

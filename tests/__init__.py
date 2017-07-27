@@ -29,7 +29,7 @@ tmp_dir = None
 # CAVE: Need to make sure this is always run as the very first test. So far it is likely
 # by its placement in the top file that contains tests.
 def test_firefox_download_dummy():
-    """Downloading firefox instance for tests"""
+    """Downloading firefox package for tests"""
     global test_app, test_archive
     # Get ourselves a Firefox app for the local platform.
     fdl = fd.FirefoxDownloader(tmp_dir)
