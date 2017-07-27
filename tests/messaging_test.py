@@ -4,6 +4,7 @@
 
 from multiprocessing import Queue
 from nose.tools import *
+from Queue import Empty
 import time
 
 import tlscanary.messaging as msg
@@ -20,7 +21,7 @@ class MsgProcessA(msg.MessagingProcess):
 
     def run(self):
         # Don't dispatch events while no one is listening
-        time.sleep(0.01)
+        time.sleep(0.03)
         self.dispatch(msg.Event("log", "A one"))
         self.dispatch(msg.Event("echo", "A two"))
         self.dispatch(msg.Event("log", "A three"))
@@ -37,7 +38,7 @@ class MsgProcessB(msg.MessagingProcess):
     def run(self):
         self.start_listening(["quit", "log", "echo"])
         self.stop_listening("echo")
-        time.sleep(0.011)
+        time.sleep(0.033)
         self.dispatch(msg.Event("echo", "B one"))
         running = True
         while running:
@@ -46,7 +47,7 @@ class MsgProcessB(msg.MessagingProcess):
                 events_received.put("by:%s id:%s msg:%s" % ("B", event.id, repr(event.message)))
                 if event.id == "quit":
                     running = False
-            time.sleep(0.002)
+            time.sleep(0.006)
         self.stop_events()
 
 
@@ -76,9 +77,9 @@ proc_c = None
 def proc_abc_setup():
     """Start messaging processes"""
     global proc_a, proc_b, proc_c
-    proc_a = MsgProcessA()
-    proc_b = MsgProcessB()
-    proc_c = MsgProcessC()
+    proc_a = MsgProcessA(name="MsgProcessA")
+    proc_b = MsgProcessB(name="MsgProcessB")
+    proc_c = MsgProcessC(name="MsgProcessC")
 
 
 def proc_abc_teardown():
@@ -104,14 +105,14 @@ def test_messaging_process():
     proc_b.start()
     proc_c.start()
 
-    time.sleep(0.02)
+    time.sleep(0.06)
     assert_false(proc_a.is_alive(), "process A finished by itself")
     assert_true(proc_b.is_alive(), "process B still running")
     assert_true(proc_c.is_alive(), "process C still running")
     assert_true(msg.is_running(), "message system still running")
 
     msg.dispatch(msg.Event("quit"))
-    time.sleep(0.02)
+    time.sleep(0.06)
     assert_false(proc_b.is_alive(), "process B has quit")
     assert_false(proc_c.is_alive(), "process C has quit")
 
@@ -133,6 +134,9 @@ def test_messaging_process():
     assert_equal(sorted(events), sorted(expected), "produces expected event history")
 
 
+threads_running = True
+
+
 class MsgThreadA(msg.MessagingThread):
 
     def __init__(self, *args, **kwargs):
@@ -141,7 +145,7 @@ class MsgThreadA(msg.MessagingThread):
 
     def run(self):
         # Don't dispatch events while no one is listening
-        time.sleep(0.01)
+        time.sleep(0.03)
         self.dispatch(msg.Event("log", "A one"))
         self.dispatch(msg.Event("echo", "A two"))
         self.dispatch(msg.Event("log", "A three"))
@@ -158,16 +162,19 @@ class MsgThreadB(msg.MessagingThread):
     def run(self):
         self.start_listening(["quit", "log", "echo"])
         self.stop_listening("echo")
-        time.sleep(0.011)
+        time.sleep(0.033)
         self.dispatch(msg.Event("echo", "B one"))
         running = True
-        while running:
+        while running and threads_running:
             while self.events_pending():
-                event = self.receive()
+                try:
+                    event = self.receive(timeout=2)
+                except Empty:
+                    break
                 events_received.put("by:%s id:%s msg:%s" % ("B", event.id, repr(event.message)))
                 if event.id == "quit":
                     running = False
-            time.sleep(0.002)
+            time.sleep(0.006)
         self.stop_events()
 
 
@@ -179,8 +186,11 @@ class MsgThreadC(msg.MessagingThread):
 
     def run(self):
         self.start_listening(["quit", "log", "echo"])
-        while True:
-            event = self.receive()
+        while threads_running:
+            try:
+                event = self.receive(timeout=2)
+            except Empty:
+                break
             events_received.put("by:%s id:%s msg:%s" % ("C", event.id, repr(event.message)))
             if event.id == "quit":
                 break
@@ -197,12 +207,18 @@ thread_c = None
 def thread_abc_setup():
     """Start messaging threads"""
     global thread_a, thread_b, thread_c
-    thread_a = MsgProcessA()
-    thread_b = MsgProcessB()
-    thread_c = MsgProcessC()
+    thread_a = MsgThreadA(name="MsgThreadA")
+    thread_b = MsgThreadB(name="MsgThreadB")
+    thread_c = MsgThreadC(name="MsgThreadC")
 
 
-@with_setup(thread_abc_setup)
+def thread_abc_teardown():
+    """Teardown must terminate processes, else nosetests will hang"""
+    global threads_running
+    threads_running = False
+
+
+@with_setup(thread_abc_setup, thread_abc_teardown)
 def test_messaging_thread():
     """IPC messaging system works for threads"""
 
@@ -215,14 +231,14 @@ def test_messaging_thread():
     thread_b.start()
     thread_c.start()
 
-    time.sleep(0.02)
+    time.sleep(0.06)
     assert_false(thread_a.is_alive(), "thread A finished by itself")
     assert_true(thread_b.is_alive(), "thread B still running")
     assert_true(thread_c.is_alive(), "thread C still running")
     assert_true(msg.is_running(), "message system still running")
 
     msg.dispatch(msg.Event("quit"))
-    time.sleep(0.02)
+    time.sleep(0.06)
     assert_false(thread_b.is_alive(), "thread B has quit")
     assert_false(thread_c.is_alive(), "thread C has quit")
 
