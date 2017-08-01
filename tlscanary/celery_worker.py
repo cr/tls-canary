@@ -2,10 +2,10 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from celery import Celery, current_app, signals, Task
+from celery import Celery, current_app, signals, Task, bootsteps
 from celery.bin import worker
 import logging
-from random import random as rand
+import random
 import resource
 import string
 
@@ -14,6 +14,25 @@ import tlscanary.xpcshell_celery_worker as xw
 
 
 logger = logging.getLogger(__name__)
+
+
+class NewWorkerStep(bootsteps.StartStopStep):
+    requires = {"celery.worker.components:Pool"}
+
+    def __init__(self, woker, **kwargs):
+        print "called new worker bootstep with {0!r}".format(kwargs)
+
+    def create(self, worker):
+        return self
+
+    def start(self, worker):
+        print "worker started"
+
+    def stop(self, worker):
+        print "worker stoppped"
+
+    def terminate(self, worker):
+        print "worker terminating"
 
 
 class MessagingCelery(Celery):
@@ -47,30 +66,31 @@ class MessagingTask(Task):
         msg.dispatch(event)
 
 
-@app.task(bind=True)
-def run_command(self, mode, **kwargs):
-    print self.request, self.request
-    self.start_listening(self.request.id)
-    kwargs["request_id"] = self.request.id
-    msg.cm
-    self.dispatch(msg.Event(mode, **kwargs))
-    return self.receive()
-
-
-app = MessagingCelery()
+app = Celery()
 xpw = None
 
 
+@app.task(bind=True)
+def run_command(self, mode, **kwargs):
+    print self.request
+    # self.start_listening(self.request.id)
+    # kwargs["request_id"] = self.request.id
+    # msg.cm
+    # self.dispatch(msg.Event(mode, **kwargs))
+    return "I think I got this: %s" % str(self.request)
+
+
 def start(args, xpcsw, result_backend="rpc://", loglevel="DEBUG"):
-    global app, xpw, logger
+    global aapp, xpw, logger
     xpw = xpcsw
     # Increase limit of open files to 500
-    # Default 256 is not enough for a pool of 50 concurrent workers
+    # Default 256 on OS X is not enough for a pool of 50 concurrent workers
     resource.setrlimit(resource.RLIMIT_NOFILE, (1000, -1))
     # app = Celery(backend="rpc://", broker="redis://localhost")
     logger.debug("Dumping celery app configuration")
     for config_key in sorted(app.conf.keys()):
         logger.debug("%s: %s" % (config_key, app.conf[config_key]))
+
     app.conf.update(
         broker_url=args.broker,
         enable_utc=True,
@@ -88,8 +108,6 @@ def start(args, xpcsw, result_backend="rpc://", loglevel="DEBUG"):
     # def setup_celery_logging(**kwargs):
     #     print "something"
 
-    from IPython import embed
-    embed()
     app.log.setup(
         loglevel=loglevel
         # logfile=None,
@@ -98,6 +116,7 @@ def start(args, xpcsw, result_backend="rpc://", loglevel="DEBUG"):
         # colorize=None,
         # hostname="foooo"
     )
+    app.steps['worker'].add(NewWorkerStep)
     celery_worker = worker.worker(app=app)
     options = {
         "loglevel": loglevel,

@@ -246,7 +246,7 @@ def create_receiver(receiver_id=None):
     :return: (receiver_id or int, multiprocessing.Queue)
     """
     if receiver_id is None:
-        receiver_id = uuid1()
+        receiver_id = str(uuid1())
     receiver_queue = global_dispatcher.add_receiver(receiver_id)
     return receiver_id, receiver_queue
 

@@ -100,7 +100,7 @@ class WakeupHandler(msg.MessagingThread):
                 # If no response event was requested, serve command queues
                 cmd = self.worker.get_pending(response)
                 logger.error("Command for response %s from worker %s is %s" % (response, self.worker.id, cmd))
-                # The worker sends an ACK and at most one response per command
+                # Note: The worker sends an ACK and at most one response per command
                 if cmd is not None:
                     if response.is_ack():
                         # ACK received
@@ -108,16 +108,18 @@ class WakeupHandler(msg.MessagingThread):
                     else:
                         # Actual result received, route to associated pending command object
                         cmd.put_result(response)
-                    # Remove command from pending listeners if all responses received
+                    # Remove command from pending listeners if all expected responses received
                     self.worker.check_pending(cmd)
                 else:
-                    if response.is_ack():
+                    if not response.is_ack():
                         logger.error("Ignoring worker response because no one is listening to response `%s`"
                                      % str(response))
             except Empty:
                 # Wake up the worker if there are commands pending,
                 # but don't pend for command's response.
                 if self.worker.has_pending():
+                    # It is important to never pend for wakeup commands,
+                    # as this would create a self-feeding wakeup loop.
                     self.worker.send(wakeup_cmd, set_pending=False)
 
         logger.debug('Wakeup handler thread finished for worker %s' % self.worker.id)
@@ -291,9 +293,9 @@ class XPCShellWorker(object):
                 self.worker_thread.stdin.flush()
                 response_queue = Queue()
                 if set_pending:
-                    logger.debug("Setting `%s` as pending" % cmd)
+                    logger.debug("Setting command `%s` as pending" % cmd.id)
                     self.set_pending(cmd)
-                    logger.error("Pending queue: %s" % map(str, self.__pending))
+                logger.error("Pending queue: %s" % map(str, self.__pending))
             except IOError:
                 logger.debug("Can't write to worker %s. Message `%s` wasn't heard." % (self.id, cmd_string))
 
@@ -322,8 +324,12 @@ class XPCShellWorker(object):
 
     def check_pending(self, cmd):
         """Un-register Command if no more responses pending"""
+        logger.warning("check_pending for command %s" % cmd.id)
         if not cmd.is_pending():
+            logger.warning("removing pending marker for command %s" % cmd.id)
             self.del_pending(cmd)
+        else:
+            logger.warning("NOT removing pending marker for command %s" % cmd.id)
 
     def has_pending(self):
         """Check whether commands are pending results"""
@@ -351,27 +357,44 @@ class Command(object):
         # Do not init queues when communicating via events. First, they can't be pickled
         # to be sent as an event, and second, they won't be served anyway.
         if "response_event" in kwargs and kwargs["response_event"]:
-            self.ack_queue = None
-            self.results = None
+            self.__ack_queue = None
+            self.__ack_pending = False
+            self.__results = None
         else:
-            self.ack_queue = Queue(maxsize=1)  # There will be one ACK
-            self.results = Queue(maxsize=1)  # There will be at most one result
+            self.__ack_queue = Queue(maxsize=1)  # There will be one ACK
+            self.__ack_pending = True
+            self.__results = Queue(maxsize=1)  # Currently supporting only 0 or 1 responses
 
-        self.results_pending = 0
+        self.__results_pending = 0
 
     def put_ack(self, response):
         logger.warn("put ack %s" % response.as_dict())
-        self.results_pending = int(response.result[4:])
-        self.ack_queue.put((response.success, self.results_pending))
+        if self.__ack_queue.full():
+            logger.error("Received multiple ACKs for command %s. Ignoring" % self.id)
+        else:
+            self.__results_pending = int(response.result[4:])
+            self.__ack_queue.put((response.success, self.__results_pending))
+            self.__ack_pending = False
+            if self.__results_pending > 1:
+                logger.critical("Number of expected results must be either 0 or 1. Truncating to 1")
+                self.__results_pending = 1
 
     def get_ack(self, block=True, timeout=None):
-        return self.ack_queue.get(block=block, timeout=timeout)
+        if self.__ack_queue is None:
+            raise Empty
+        return self.__ack_queue.get(block=block, timeout=timeout)
 
     def put_result(self, response, block=True, timeout=None):
-        self.results.put(response, block=block, timeout=timeout)
+        if self.__results.full():
+            logger.error("Command ID %s response queue is overflowing. Ignoring response" % self.id)
+        else:
+            self.__results_pending -= 1
+            self.__results.put(response, block=block, timeout=timeout)
 
     def get_result(self, block=True, timeout=None):
-        return self.results.get(block=block, timeout=timeout)
+        if self.__results is None:
+            raise Empty
+        return self.__results.get(block=block, timeout=timeout)
 
     def wait(self, timeout=None):
         results = [self.get_ack(timeout=timeout)]
@@ -380,8 +403,7 @@ class Command(object):
         return results
 
     def is_pending(self):
-        # logger.warn("check pending %d %d %d" % (self.ack_queue.qsize(), self.results.qsize(),  self.results_pending))
-        return self.ack_queue.empty() or (self.results_pending > 0 and self.results.full())
+        return self.__ack_pending or self.__results_pending > 0
 
     def as_dict(self):
         return {"id": self.id, "mode": self.mode, "args": self.args}

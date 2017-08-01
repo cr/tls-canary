@@ -58,7 +58,7 @@ class CeleryScanMode(BaseMode):
             # worker_pool="solo",
         )
         print "before send"
-        res = cw.run_command.delay("info")
+        res = cw.run_command.delay("info", timeout=100)
         print "*** RESULT:", res.get(timeout=10)
 
         return
