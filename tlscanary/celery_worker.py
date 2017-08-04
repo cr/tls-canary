@@ -8,6 +8,8 @@ import logging
 import random
 import resource
 import string
+from threading import current_thread
+import time
 
 import tlscanary.messaging as msg
 import tlscanary.xpcshell_celery_worker as xw
@@ -72,12 +74,12 @@ xpw = None
 
 @app.task(bind=True)
 def run_command(self, mode, **kwargs):
-    print self.request
     # self.start_listening(self.request.id)
     # kwargs["request_id"] = self.request.id
     # msg.cm
     # self.dispatch(msg.Event(mode, **kwargs))
-    return "I think I got this: %s" % str(self.request)
+    time.sleep(1 + random.random()*3)
+    return "%s got this: %s" % (str(current_thread()), str(self.request))
 
 
 def start(args, xpcsw, result_backend="rpc://", loglevel="DEBUG"):
@@ -87,9 +89,12 @@ def start(args, xpcsw, result_backend="rpc://", loglevel="DEBUG"):
     # Default 256 on OS X is not enough for a pool of 50 concurrent workers
     resource.setrlimit(resource.RLIMIT_NOFILE, (1000, -1))
     # app = Celery(backend="rpc://", broker="redis://localhost")
+    logger.critical("A"*100)
+    print "A"*1000
     logger.debug("Dumping celery app configuration")
     for config_key in sorted(app.conf.keys()):
         logger.debug("%s: %s" % (config_key, app.conf[config_key]))
+    logger.critical("B"*100)
 
     app.conf.update(
         broker_url=args.broker,
@@ -99,6 +104,7 @@ def start(args, xpcsw, result_backend="rpc://", loglevel="DEBUG"):
         tast_serializer="pickle",
         worker_concurrency=args.requestsperworker,
         worker_hijack_root_logger=True,
+        worker_pool="solo",
         worker_redirect_stdouts=True,
         worker_redirect_stdouts_level="WARNING",
         worker_send_task_events=True,
