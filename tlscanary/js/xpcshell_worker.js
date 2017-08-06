@@ -56,7 +56,7 @@ function set_prefs(prefs) {
         let type = "string"; // default
         if (value === "true" || value === "false") type = "boolean";
         if (!isNaN(value)) type = "number";
-        if (value == undefined) type = "undefined";
+        if (value === undefined) type = "undefined";
 
         switch (type) {
             case "boolean":
@@ -84,8 +84,8 @@ function set_profile(profile_path) {
     let provider = {
         getFile: function(prop, persistent) {
             persistent.value = true;
-            if (prop == "ProfD" || prop == "ProfLD" || prop == "ProfDS" ||
-                prop == "ProfLDS" || prop == "PrefD" || prop == "TmpD") {
+            if (prop === "ProfD" || prop === "ProfLD" || prop === "ProfDS" ||
+                prop === "ProfLDS" || prop === "PrefD" || prop === "TmpD") {
                 return file.clone();
             }
             return null;
@@ -132,7 +132,7 @@ function collect_request_info(xhr, report_certs) {
 
     // Try to query security info
     let sec_info = xhr.channel.securityInfo;
-    if (sec_info == null) return info;
+    if (sec_info === null) return info;
     info.security_info_status = true;
 
     if (sec_info instanceof Ci.nsITransportSecurityInfo) {
@@ -275,7 +275,7 @@ function Command(json_string, connection) {
 // Even though it's a prototype method it will require bind when passed as callback.
 Command.prototype.reply = function _report_result(success, result) {
     // Send a response back to the python world
-    this.connection.reply(JSON.stringify({
+    const reply = JSON.stringify({
         "id": this.id,
         "worker_id": worker_id,
         "original_cmd": this.original_cmd,
@@ -283,8 +283,9 @@ Command.prototype.reply = function _report_result(success, result) {
         "result": result,
         "command_time": this.start_time.getTime(),
         "response_time": new Date().getTime(),
-    }));
-    //this.connection.close();
+    });
+    send_reply(reply, this.connection);
+    while (main_thread.hasPendingEvents()) main_thread.processNextEvent(true);
 };
 
 Command.prototype.handle = function _handle() {
@@ -325,47 +326,94 @@ Command.prototype.handle = function _handle() {
 };
 
 
-// Here is the socket-based server component
-// https://dxr.mozilla.org/mozilla-central/source/netwerk/test/httpserver/httpd.js
+/**
+ * Glue code between socket server requests and TLS Canary functions.
+ */
 
-const ServerSocket = CC("@mozilla.org/network/server-socket;1", "nsIServerSocket", "init");
-const ConverterInputStream = CC("@mozilla.org/intl/converter-input-stream;1", "nsIConverterInputStream", "init");
-const ConverterOutputStream = CC("@mozilla.org/intl/converter-output-stream;1", "nsIConverterOutputStream", "init");
+function handle_request(request, connection) {
+    print("DEBUG: Received request: ", request);
+    try {
+        let cmd = new Command(request, connection);
+        cmd.handle();
+    } catch (e) {
+        print("ERROR: Unable to handle command:", e.message);
+        throw e;
+    }
+}
+
+function send_reply(reply_string, connection) {
+    connection.reply(reply_string);
+}
+
+/**
+ * Implementation of a TCP socket-based command server. It is heavily inspired by
+ * https://dxr.mozilla.org/mozilla-central/source/netwerk/test/httpserver/httpd.js
+ * where you'll likely find the solution of all current issues with this code.
+ */
+
+const ServerSocket = CC("@mozilla.org/network/server-socket;1",
+                        "nsIServerSocket",
+                        "init");
+const ConverterInputStream = CC("@mozilla.org/intl/converter-input-stream;1",
+                                "nsIConverterInputStream",
+                                "init");
+const ConverterOutputStream = CC("@mozilla.org/intl/converter-output-stream;1",
+                                 "nsIConverterOutputStream",
+                                 "init");
 
 
 let SocketListener = {
     onSocketAccepted(socket, transport) {
+        print("DEBUG: Connection from port", transport.host, transport.port);
         try {
-            let input_stream = transport.openInputStream(0, 0, 0).QueryInterface(Ci.nsIAsyncInputStream);
-            let output_stream = transport.openOutputStream(0, 0, 0);
-            let connection = new Connection(input_stream, output_stream, transport);
+            let input_stream = transport.openInputStream(Cr.OPEN_UNBUFFERED | Cr.OPEN_BLOCKING, 0, 0)
+                .QueryInterface(Ci.nsIAsyncInputStream);
+            let output_stream = transport.openOutputStream(Cr.OPEN_UNBUFFERED | Cr.OPEN_BLOCKING, 0, 0);
+            let connection = new Connection(socket, transport, input_stream, output_stream);
             let reader = new StreamReader(connection);
             input_stream.asyncWait(reader, 0, 0, main_thread);
         } catch (e) {
-            print("ERROR: Command listener failed handling streams:", e);
+            print("ERROR: Command listener failed handling streams:", e.message);
             transport.close(Cr.NS_BINDING_ABORTED);
         }
     },
-    onStopListening(socket, stat) {
-        print("DEBUG: Socket listener stopped accepting connections.", socket, stat);
+    onStopListening(socket, condition) {
+        print("DEBUG: Socket listener stopped accepting connections. Status: 0x" + condition.toString(16));
+        server_shutdown_done = true;
     }
 };
 
 
-function Connection(input, output, transport) {
+function Connection(socket, transport, input, output) {
+    this.socket = socket;
+    this.transport = transport;
     this.input = input;
     this.output = output;
-    this.transport = transport;
 }
 
 Connection.prototype = {
     reply: function (response) {
+        print("DEBUG: Sending reply:", response);
         let cos = new ConverterOutputStream(this.output, "UTF-8", 0, 0x0);
-        cos.writeString(response);
+        try {
+            // Protocol convention is to send one reply per line.
+            cos.writeString(response + "\n");
+            cos.flush();
+            this.output.flush();
+        } catch (e) {
+            print("ERROR: Unable to send reply:", e.message);
+            this.close();
+        }
     },
     close: function () {
-        this.input.close();
-        this.output.close();
+        print("DEBUG: Closing connection");
+        try {
+            this.output.flush();
+            this.input.close();
+            this.output.close();
+        } catch (e) {
+            print("ERROR: Unable to flush and close connection:", e.message)
+        }
         this.transport.close(Cr.NS_OK);
     }
 };
@@ -373,34 +421,88 @@ Connection.prototype = {
 
 function StreamReader(connection) {
     this.connection = connection;
+    this.buffer = "";
 }
 
 StreamReader.prototype = {
-    onInputStreamReady: function (input) {
-        print("DEBUG: stream ready", input);
-        let cis = new ConverterInputStream(input, "UTF-8", 0, 0x0);
+    onInputStreamReady: function (input_stream) {
+
+        // First check if there is data available.
+        // This check may fail when the peer has closed the connection.
+        let data_available = false;
+        try {
+            data_available = input_stream.available() > 0;
+        } catch (e) {
+            if (e.message.indexOf("NS_BASE_STREAM_CLOSED") !== -1) {
+                print("WARNING: Base stream was closed");
+            } else {
+                print("ERROR: Unable to check stream availability:", e.message);
+            }
+            this.connection.close();
+            return;
+        }
+
+        // An empty input stream means that the connection was closed.
+        if (!data_available) {
+            print("DEBUG: Connection closed by peer");
+            this.connection.close();
+            return;
+        }
+
+        // Interpret available data as UTF-8 strings
+        let cis = new ConverterInputStream(input_stream, "UTF-8", 0, 0x0);
         let str = {};
         try {
-            cis.readString(8192, str);
-            print("DEBUG: Stream reader received input:", str.value);
-            let cmd = new Command(str.value, this.connection);
-            cmd.handle();
+            cis.readString(4096, str);
         } catch (e) {
-            print("ERROR: can not handle socket input: ", e.message);
+            print("ERROR: Unable to read input stream: ", e.message);
+            this.connection.close();
+            return;
         }
-        print("DEBUG: onInpuStreamReady done");
+
+        // When a read yields empty, the stream was likely closed.
+        if (str.value.length === 0) {
+            print("DEBUG: Empty read from stream. Assuming stream was closed");
+            this.connection.close();
+            return;
+        }
+        this.buffer += str.value;
+
+        // When there is data available, the protocol expects one request per line.
+        if (this.buffer[this.buffer.length - 1] === '\n') {
+            // The buffer we just read may have included several command lines
+            this.buffer.split('\n').forEach((function(cmd_str) {
+                if (cmd_str.length > 0)
+                    handle_request(cmd_str, this.connection)
+            }).bind(this));
+            // Clear buffer for next incoming lines
+            this.buffer = "";
+        }
+
+
+        // Must explicitly chain to receive more callbacks for this connection.
+        input_stream.asyncWait(this, 0, 0, main_thread);
+
     }
 };
 
 
-// First and only argument to script is the optional command server port
+/**
+ * Argument parser
+ * First and only argument to script is the optional command server port.
+ */
 let command_port = 5656;
 if (arguments.length > 0) command_port = parseInt(arguments[0], 10);
 if (isNaN(command_port)) quit(5);
 
+
+/**
+ * Global socket-based command server instance
+ */
+var command_server;
 // Start the command server, listening locally on command port
 try {
-    let command_server = new ServerSocket(command_port, true, 100);
+    command_server = new ServerSocket(command_port, true, 100);
     command_server.asyncListen(SocketListener);
 } catch (e) {
     print("ERROR: Unable to start listener:", e.message);
@@ -408,15 +510,36 @@ try {
 }
 print("DEBUG: Worker listening for connections on port", command_port);
 
-// Main event handler loop
-let wakeup_pings = true;
+
+/**
+ * Main thread event handler loop
+ */
 let script_running = true;
+let wakeup_pings = false;
+let server_shutdown_done = false;
+
 while (script_running) {
-    while (script_running && main_thread.hasPendingEvents()) main_thread.processNextEvent(true);
+    print("DEBUG: Event loop");
+    main_thread.processNextEvent(!wakeup_pings);
     if (wakeup_pings) {
-        print("wakeup readline");
+        print("DEBUG: waiting for wakeup readline");
         readline();
     }
 }
 
+
+/**
+ * Shutdown procedure
+ */
+
+print("DEBUG: Shutting down server");
 command_server.close();
+
+// TODO: close existing connections
+print("DEBUG: Expect dangling connection callbacks to throw `print` type errors");
+
+print("DEBUG: Handling remaining events");
+while (!server_shutdown_done)
+    while (main_thread.hasPendingEvents()) main_thread.processNextEvent(true);
+
+quit(0);
