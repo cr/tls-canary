@@ -11,6 +11,7 @@ INSTALL_REQUIRES = [
     'coloredlogs',
     'cryptography',
     'hashfs',
+    'pyrabbit',
     'python-dateutil',
     'redis',
     'celery[redis]',
