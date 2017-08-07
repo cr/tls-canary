@@ -1,8 +1,10 @@
 # Echo client program
+import logging
 import socket
 import time
 
-import logging
+import tlscanary.xpcshell_socket_worker as xw
+
 logging.basicConfig()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -122,6 +124,8 @@ class WorkerConnection(object):
                 if len(r) == 0:
                     logger.warning("Empty read likely caused by peer closing connection")
                     logger.critical("Received %s" % repr(received))
+                    import sys
+                    sys.exit()
                     # return None
                     return None if len(received) == 0 else received
                 received += r
@@ -177,19 +181,25 @@ class WorkerConnection(object):
                     return replies
 
 
-wc = WorkerConnection()
+wc = xw.WorkerConnection(5555)
+# from IPython import embed
+# embed()
+
+
 i = 1
 while True:
 
-    data = wc.chat("""{"mode":"setid","args":{"id":%d}}\n""" % i)
-    logger.critical("received: %s" % repr(data))
+    # data = wc.chat("""{"mode":"setid","args":{"id":%d}}\n""" % i, always_reconnect=False)
+    # logger.critical("received: %s" % repr(data))
+    #
+    # data = wc.chat("""{"mode":"info"}\n""", always_reconnect=False)
+    # logger.critical("received: %s" % repr(data))
 
-    data = wc.chat("""{"mode":"info"}\n""")
-    logger.critical("received: %s" % repr(data))
-
-    data = wc.chat("""{"mode":"info"}\n""")
+    data = wc.chat("""{"mode":"info"}\n""", always_reconnect=False)
     logger.critical("received: %s" % repr(data))
 
     i += 1
 
-    # time.sleep(0.001)
+    # if i>=5000:
+    #     break
+    # time.sleep(0.01)

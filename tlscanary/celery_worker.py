@@ -4,72 +4,116 @@
 
 from celery import Celery, current_app, signals, Task, bootsteps
 from celery.bin import worker
+from celery.worker.control import control_command
+from kombu import Consumer, Exchange, Queue
 import logging
 import random
 import resource
+import shutil
 import string
 from threading import current_thread
 import time
+import tempfile
 
-import tlscanary.messaging as msg
 import tlscanary.xpcshell_celery_worker as xw
+import tlscanary.firefox_downloader as fd
+import tlscanary.firefox_extractor as fe
+
+
+workdir = tempfile.mkdtemp(prefix="tlscanarytest_")
+
+app = Celery()
+xpw = None
 
 
 logger = logging.getLogger(__name__)
 
 
-class NewWorkerStep(bootsteps.StartStopStep):
+def download_firefox_app(build):
+    platform = fd.FirefoxDownloader.detect_platform()
+    fdl = fd.FirefoxDownloader(workdir, cache_timeout=60*60)
+    build_archive_file = fdl.download(build, platform)
+    if build_archive_file is None:
+        shutil.rmtree(workdir, ignore_errors=True)
+        return None
+    # Extract candidate archive
+    candidate_app = fe.extract(build_archive_file, workdir, cache_timeout=60*60)
+    candidate_app.package_origin = fdl.get_download_url(build, platform)
+    return candidate_app
+
+
+class InitFirefoxStep(bootsteps.StartStopStep):
     requires = {"celery.worker.components:Pool"}
 
-    def __init__(self, woker, **kwargs):
+    def __init__(self, worker, **kwargs):
         print "called new worker bootstep with {0!r}".format(kwargs)
 
     def create(self, worker):
         return self
 
     def start(self, worker):
+        global xpw
+        print "XPCShell worker starting"
+        candidate_app = download_firefox_app("nightly")
+        if candidate_app is None:
+            print "Unable to download Firefox. Worker is non-functional"
+            return
+        xpw = xw.XPCShellWorker(candidate_app)
+        xpw.spawn()
         print "worker started"
 
     def stop(self, worker):
-        print "worker stoppped"
+        print "worker stopped"
 
     def terminate(self, worker):
-        print "worker terminating"
+        print "XPCShell worker terminating"
+        xpw.terminate()
+        while xpw.is_running():
+            print "still running"
+            time.sleep(0.1)
+        shutil.rmtree(workdir)
+        print "worker terminated"
 
 
-class MessagingCelery(Celery):
-    """Subclass of Celery app that uses PipingTask for creating tasks"""
-    task_cls = "tlscanary.celery_worker.MessagingTask"
+@control_command(
+    args=[],
+    signature="[N=0]"
+)
+def update_firefox(state):
+    global xpw
+    xpw.terminate()
+    while xpw.is_running():
+        print "still running"
+        time.sleep(0.1)
+    candidate_app = download_firefox_app("nightly")
+    if candidate_app is None:
+        print "Unable to download Firefox. Worker is non-functional"
+        return
+    xpw = xw.XPCShellWorker(candidate_app)
+    xpw.spawn()
 
 
-class MessagingTask(Task):
-    """Subclass of Celery task that *inherits* a Pipe for XPCShellWorker IPC"""
-
-    def __init__(self):
-        # This must be run from the main process
-        super(MessagingTask, self).__init__()
-        self.__receiver_id, self.__queue = msg.create_receiver()
-
-    def start_listening(self, event_id):
-        msg.start_listening(self.__receiver_id, event_id)
-
-    def events_pending(self):
-        return not self.__queue.empty()
-
-    def receive(self, block=True, timeout=None):
-        return self.__queue.get(block=block, timeout=timeout)
-
-    def stop_events(self):
-        """Must be called to avoid dead listeners"""
-        msg.remove_receiver(self.__receiver_id)
-
-    @staticmethod
-    def dispatch(event):
-        msg.dispatch(event)
+update_firefox_queue = Queue("custom", Exchange("custom"), "update_firefox")
 
 
-app = Celery()
-xpw = None
+class FirefoxUpdate(bootsteps.ConsumerStep):
+    def get_consumers(self, channel):
+        return [Consumer(channel, queues=[update_firefox_queue], callbacks=[self.handle_message], accept=["pickle"])]
+
+    def handle_message(self, body, message):
+        print "Received message: {0!r}".format(body)
+        message.ack()
+
+
+def send_update_firefox_message(who, producer=None):
+    with app.producer_or_acquire(producer) as prod:
+        prod.publish(
+            {"hello": who},
+            serializer="pickle",
+            exchange=update_firefox_queue.exchange,
+            routing_key=update_firefox_queue.routing_key,
+            declare=[update_firefox_queue],
+            retry=True)
 
 
 @app.task(bind=True)
@@ -102,6 +146,7 @@ def start(args, xpcsw, result_backend="rpc://", loglevel="DEBUG"):
         result_backend=result_backend,
         task_send_set_event=True,
         tast_serializer="pickle",
+        timezone="UTC",
         worker_concurrency=args.requestsperworker,
         worker_hijack_root_logger=True,
         worker_pool="solo",
@@ -122,7 +167,7 @@ def start(args, xpcsw, result_backend="rpc://", loglevel="DEBUG"):
         # colorize=None,
         # hostname="foooo"
     )
-    app.steps['worker'].add(NewWorkerStep)
+    app.steps['worker'].add(InitFirefoxStep)
     celery_worker = worker.worker(app=app)
     options = {
         "loglevel": loglevel,

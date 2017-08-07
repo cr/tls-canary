@@ -84,7 +84,7 @@ class CeleryWorkerMode(BaseMode):
         group.add_argument("-r", "--broker",
                            help="Celery broker to connect to (default: redis://localhost)",
                            action="store",
-                           default="redis://localhost")
+                           default="amqp://localhost")
 
     def __init__(self, args, module_dir, tmp_dir):
         global logger
