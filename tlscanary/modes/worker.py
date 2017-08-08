@@ -9,7 +9,7 @@ import sys
 
 from basemode import BaseMode
 import tlscanary.firefox_downloader as fd
-import tlscanary.xpcshell_celery_worker as xw
+import tlscanary.xpcshell_socket_worker as xw
 
 logger = logging.getLogger(__name__)
 

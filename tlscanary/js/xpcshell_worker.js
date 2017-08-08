@@ -175,6 +175,9 @@ function collect_request_info(xhr, report_certs) {
         }
         info.certificate_chain_length = cert_chain.length;
         info.certificate_chain = cert_chain;
+    } else {
+        info.certificate_chain_length = 0;
+        info.certificate_chain = null;
     }
 
     if (info.ssl_status_status) {
@@ -202,6 +205,11 @@ function collect_request_info(xhr, report_certs) {
 function scan_host(args, response_cb) {
 
     let host = args.host;
+
+    // Prepend https:// scheme if there is no scheme defined in the host name
+    const scheme_sep = host.indexOf("://");
+    if (scheme_sep < 0 || scheme_sep > 10) host = "https://" + host;
+
     let report_certs = args.include_certificates === true;
 
     function load_handler(msg) {
@@ -240,7 +248,7 @@ function scan_host(args, response_cb) {
     let request = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"].createInstance(Ci.nsIXMLHttpRequest);
     try {
         request.mozBackgroundRequest = true;
-        request.open("HEAD", "https://" + host, true);
+        request.open("HEAD", host, true);
         request.timeout = args.timeout ? args.timeout * 1000 : DEFAULT_TIMEOUT;
         request.channel.loadFlags |= Ci.nsIRequest.LOAD_ANONYMOUS
             | Ci.nsIRequest.LOAD_BYPASS_CACHE
@@ -255,21 +263,57 @@ function scan_host(args, response_cb) {
     } catch (error) {
         // This is supposed to catch malformed host names, but could
         // potentially mask other errors.
-        response_cb(false, {origin: "request_error", error: error, info: collect_request_info(request, false)});
+        response_cb(false, {origin: "request_error", error: error.message,
+            info: collect_request_info(request, false)});
     }
 }
+
+function do_test(args, response_cb) {
+    if (args.count_to) {
+        print("DEBUG: Counting to", args.count_to);
+        for (let x = 1; x <= args.count_to; x++) {
+            for (let y = 0; y < 100000; y += 2) { y--; }  // Just waste some time
+            if (args.count_debug) {
+                print("DEBUG: Counting", x);
+            }
+        }
+        response_cb(true, "ACK");
+    } else if (args.sleep) {
+        print("DEBUG: sleeping for " + args.sleep + " seconds");
+        let timer = CC("@mozilla.org/timer;1", "nsITimer", "initWithCallback");
+        let event = {
+            notify: function() {
+                response_cb(true, "ACK");
+            }
+        };
+        timer(event, 1000 * args.sleep, Ci.nsITimer.TYPE_ONE_SHOT);
+    } else {
+        response_cb(false, {origin: "do_test", error: null, info: "improper test command"});
+    }
+
+}
+
 
 
 // Command object definition. Must be in-sync with Python world.
 // This is used for keeping state throughout async command handling.
 function Command(json_string, connection) {
-    let parsed_command = JSON.parse(json_string);
     this.connection = connection;
+    let parsed_command = {};
     this.id = parsed_command.id ? parsed_command.id : uuid4();
+    this.start_time = new Date();
+    try {
+        parsed_command = JSON.parse(json_string);
+    } catch (error) {
+        this.mode = null;
+        this.args = null;
+        this.original_cmd = null;
+        this.reply(false, {origin: "Command", error: error.message, info: "invalid JSON"});
+        throw error;
+    }
     this.mode = parsed_command.mode;
     this.args = parsed_command.args;
     this.original_cmd = parsed_command;
-    this.start_time = new Date();
 }
 
 // Even though it's a prototype method it will require bind when passed as callback.
@@ -285,43 +329,52 @@ Command.prototype.reply = function _report_result(success, result) {
         "response_time": new Date().getTime(),
     });
     send_reply(reply, this.connection);
-    while (main_thread.hasPendingEvents()) main_thread.processNextEvent(true);
+// TODO:    while (main_thread.hasPendingEvents()) main_thread.processNextEvent(true);
 };
 
 Command.prototype.handle = function _handle() {
-	// Every command must be acknowledged with result "ACK,n"
-	// where n is the number of pending command responses.
-	switch (this.mode) {
-        case "setid":
-            set_worker_id(this.args.id);
-            this.reply(true, "ACK");
-            break;
-        case "info":
-            this.reply(true, get_runtime_info());
-            break;
-        case "useprofile":
-            set_profile(this.args.path);
-            this.reply(true, "ACK");
-            break;
-        case "setprefs":
-            set_prefs(this.args.prefs);
-            this.reply(true, "ACK");
-            break;
-        case "scan":
-            // .bind is required for callback to avoid
-            // 'this is undefined' when called from request handlers.
-            scan_host(this.args, this.reply.bind(this));
-            break;
-        case "quit":
-            script_running = false;
-            this.reply(true, "ACK");
-            break;
-        case "wakeup":
-            wakeup_pings = this.args.pings;
-            this.reply(true, "ACK");
-            break;
-        default:
-            this.reply(false, "ACK");
+    try {
+        // Every command must be acknowledged with result "ACK,n"
+        // where n is the number of pending command responses.
+        switch (this.mode) {
+            case "setid":
+                set_worker_id(this.args.id);
+                this.reply(true, "ACK");
+                break;
+            case "info":
+                this.reply(true, get_runtime_info());
+                break;
+            case "useprofile":
+                set_profile(this.args.path);
+                this.reply(true, "ACK");
+                break;
+            case "setprefs":
+                set_prefs(this.args.prefs);
+                this.reply(true, "ACK");
+                break;
+            case "scan":
+                // .bind is required for callback to avoid
+                // 'this is undefined' when called from request handlers.
+                scan_host(this.args, this.reply.bind(this));
+                break;
+            case "test":
+                // Command mode used for unit testing
+                do_test(this.args, this.reply.bind(this));
+                break;
+            case "quit":
+                script_running = false;
+                this.reply(true, "ACK");
+                break;
+            case "wakeup":
+                wakeup_pings = this.args.pings;
+                this.reply(true, "ACK");
+                break;
+            default:
+                this.reply(false, {origin: "Command.handle", error: null, info: "unknown mode"});
+        }
+    } catch (error) {
+        this.reply(false, {origin: "Command.handle", error: error.message, info: "internal error"});
+        throw error;
     }
 };
 
@@ -331,13 +384,13 @@ Command.prototype.handle = function _handle() {
  */
 
 function handle_request(request, connection) {
-    print("DEBUG: Received request: ", request);
+    print("DEBUG: Handling request:", request);
     try {
         let cmd = new Command(request, connection);
         cmd.handle();
-    } catch (e) {
-        print("ERROR: Unable to handle command:", e.message);
-        throw e;
+    } catch (error) {
+        print("ERROR: Unable to handle command:", error);
+        connection.close()
     }
 }
 
@@ -366,9 +419,13 @@ let SocketListener = {
     onSocketAccepted(socket, transport) {
         print("DEBUG: Connection from port", transport.host, transport.port);
         try {
-            let input_stream = transport.openInputStream(Cr.OPEN_UNBUFFERED | Cr.OPEN_BLOCKING, 0, 0)
+            transport.setTimeout(Cr.TIMEOUT_CONNECT, 60);
+            transport.setTimeout(Cr.TIMEOUT_READ_WRITE, 60);
+            // let input_stream = transport.openInputStream(Cr.OPEN_UNBUFFERED | Cr.OPEN_BLOCKING, 0, 0)
+            let input_stream = transport.openInputStream(0, 0, 0)
                 .QueryInterface(Ci.nsIAsyncInputStream);
-            let output_stream = transport.openOutputStream(Cr.OPEN_UNBUFFERED | Cr.OPEN_BLOCKING, 0, 0);
+            // let output_stream = transport.openOutputStream(Cr.OPEN_UNBUFFERED | Cr.OPEN_BLOCKING, 0, 0);
+            let output_stream = transport.openOutputStream(0, 0, 0);
             let connection = new Connection(socket, transport, input_stream, output_stream);
             let reader = new StreamReader(connection);
             input_stream.asyncWait(reader, 0, 0, main_thread);
@@ -394,7 +451,7 @@ function Connection(socket, transport, input, output) {
 Connection.prototype = {
     reply: function (response) {
         print("DEBUG: Sending reply:", response);
-        let cos = new ConverterOutputStream(this.output, "UTF-8", 0, 0x0);
+        let cos = new ConverterOutputStream(this.output, "UTF-8", 8192, 0x0);
         try {
             // Protocol convention is to send one reply per line.
             cos.writeString(response + "\n");
@@ -438,6 +495,8 @@ StreamReader.prototype = {
             } else {
                 print("ERROR: Unable to check stream availability:", e.message);
             }
+            if (this.buffer.length > 0)
+                print("WARNING: Dropping non-empty buffer:", this.buffer);
             this.connection.close();
             return;
         }
@@ -445,6 +504,8 @@ StreamReader.prototype = {
         // An empty input stream means that the connection was closed.
         if (!data_available) {
             print("DEBUG: Connection closed by peer");
+            if (this.buffer.length > 0)
+                print("WARNING: Dropping non-empty buffer:", this.buffer);
             this.connection.close();
             return;
         }
@@ -456,6 +517,8 @@ StreamReader.prototype = {
             cis.readString(4096, str);
         } catch (e) {
             print("ERROR: Unable to read input stream: ", e.message);
+            if (this.buffer.length > 0)
+                print("WARNING: Dropping non-empty buffer:", this.buffer);
             this.connection.close();
             return;
         }
@@ -463,6 +526,8 @@ StreamReader.prototype = {
         // When a read yields empty, the stream was likely closed.
         if (str.value.length === 0) {
             print("DEBUG: Empty read from stream. Assuming stream was closed");
+            if (this.buffer.length > 0)
+                print("WARNING: Dropping non-empty buffer:", this.buffer);
             this.connection.close();
             return;
         }
@@ -471,14 +536,13 @@ StreamReader.prototype = {
         // When there is data available, the protocol expects one request per line.
         if (this.buffer[this.buffer.length - 1] === '\n') {
             // The buffer we just read may have included several command lines
-            this.buffer.split('\n').forEach((function(cmd_str) {
-                if (cmd_str.length > 0)
-                    handle_request(cmd_str, this.connection)
+            this.buffer.slice(0, -1).split('\n').forEach((function (cmd_str) {
+                print("DEBUG: handling request line:", cmd_str);
+                handle_request(cmd_str, this.connection);
             }).bind(this));
             // Clear buffer for next incoming lines
             this.buffer = "";
         }
-
 
         // Must explicitly chain to receive more callbacks for this connection.
         input_stream.asyncWait(this, 0, 0, main_thread);
@@ -488,27 +552,51 @@ StreamReader.prototype = {
 
 
 /**
- * Argument parser
+ * Global socket-based command server instantiation
+ *
  * First and only argument to script is the optional command server port.
+ * If no port is given, port 0 is used as default which means that the OS
+ * chooses any free port.
+ *
+ * To signal success or failure, the first line written to stdout will be one
+ * of the following:
+ *
+ *    "ERROR: Invalid port" -- Argument could not be parsed as integer value.
+ *    "ERROR: Port in use"  -- Port is in use. Try a different one.
+ *    "ERROR: Port refused" -- Port is privileged or there are no free ports
+ *                             available.
+ *    "ERROR: ..."          -- A different socket error occurred.
+ *    "INFO: ... <PORT>"    -- Worker is now listening on port <PORT> and
+ *                             switching to socket mode.
  */
-let command_port = 5656;
+
+// Parse port argument
+let command_port = 0;
 if (arguments.length > 0) command_port = parseInt(arguments[0], 10);
-if (isNaN(command_port)) quit(5);
-
-
-/**
- * Global socket-based command server instance
- */
-var command_server;
-// Start the command server, listening locally on command port
-try {
-    command_server = new ServerSocket(command_port, true, 100);
-    command_server.asyncListen(SocketListener);
-} catch (e) {
-    print("ERROR: Unable to start listener:", e.message);
+if (isNaN(command_port) || command_port < 0 || command_port > 65535) {
+    print("ERROR: Invalid port");
     quit(10);
 }
-print("DEBUG: Worker listening for connections on port", command_port);
+
+// Start the command server, listening locally on command port
+var command_server;
+try {
+    command_server = new ServerSocket(command_port, true, 20);
+} catch (e) {
+    if (e.message.indexOf("(NS_ERROR_SOCKET_ADDRESS_IN_USE") !== -1) {
+        print("ERROR: Port in use");
+        quit(11);
+    } else if (e.message.indexOf("(NS_ERROR_CONNECTION_REFUSED") !== -1) {
+        print("ERROR: Port refused");
+        quit(12);
+    } else {
+        print("ERROR:", e.message);
+        quit(13);
+    }
+}
+command_port = command_server.port;
+command_server.asyncListen(SocketListener);
+print("INFO: Listening on port", command_port);
 
 
 /**

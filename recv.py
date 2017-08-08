@@ -195,7 +195,7 @@ while True:
     # data = wc.chat("""{"mode":"info"}\n""", always_reconnect=False)
     # logger.critical("received: %s" % repr(data))
 
-    data = wc.chat("""{"mode":"info"}\n""", always_reconnect=False)
+    data = wc.ask(xw.Command("info"))
     logger.critical("received: %s" % repr(data))
 
     i += 1

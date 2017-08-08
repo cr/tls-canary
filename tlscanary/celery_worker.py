@@ -15,7 +15,7 @@ from threading import current_thread
 import time
 import tempfile
 
-import tlscanary.xpcshell_celery_worker as xw
+import tlscanary.xpcshell_socket_worker as xw
 import tlscanary.firefox_downloader as fd
 import tlscanary.firefox_extractor as fe
 

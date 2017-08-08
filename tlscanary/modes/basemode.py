@@ -18,7 +18,7 @@ import tlscanary.firefox_extractor as fe
 import tlscanary.one_crl_downloader as one_crl
 import tlscanary.sources_db as sdb
 import tlscanary.worker_pool as wp
-import tlscanary.xpcshell_celery_worker as xw
+import tlscanary.xpcshell_socket_worker as xw
 
 
 logger = logging.getLogger(__name__)

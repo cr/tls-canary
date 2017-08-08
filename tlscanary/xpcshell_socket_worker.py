@@ -26,17 +26,21 @@ class XPCShellWorker(object):
         self.port = None
         self.__app = app
         if script is None:
-            self.__script = os.path.join(module_dir, "js", "scan_worker.js")
+            self.__script = os.path.join(module_dir, "js", "xpcshell_worker.js")
         else:
             self.__script = script
         self.__profile = profile
         self.__prefs = prefs
-        self.worker_thread = None
+        self.worker_process = None
         self.__reader_thread = None
 
     def spawn(self, port=None):
         """Spawn the worker process and its dedicated handler threads"""
         global logger, module_dir
+
+        if self.is_running():
+            logger.warning("Re-spawning worker %s which was already running" % self.id)
+            self.terminate()
 
         if port is None:
             port = self.port if self.port is not None else 0
@@ -45,7 +49,7 @@ class XPCShellWorker(object):
                "-a", self.__app.browser, self.__script, str(port)]
         logger.debug("Executing worker shell command `%s`" % ' '.join(cmd))
 
-        self.worker_thread = subprocess.Popen(
+        self.worker_process = subprocess.Popen(
             cmd,
             cwd=self.__app.browser,
             stdin=subprocess.PIPE,
@@ -53,62 +57,77 @@ class XPCShellWorker(object):
             stderr=subprocess.STDOUT,
             bufsize=1)  # `1` means line-buffered
 
+        if self.worker_process.poll() is not None:
+            logger.critical("Unable to start worker %s process. Poll yields %d"
+                            % (self.id, self.worker_process.poll()))
+
         # First line the worker prints to stdout reports success or fail.
-        status = self.worker_thread.stdout.readline().strip()
+        status = self.worker_process.stdout.readline().strip()
         logger.debug("Worker %s reported startup status: %s" % (self.id, status))
-        if not status.starswith("INFO:"):
+        if not status.startswith("INFO:"):
             logger.critical("Worker %s can't get socket on requested port %d" % (self.id, port))
+            self.terminate()
             return False
 
         # Actual port is reported as last word on INFO line
-        port = status.split(" ")[-1]
-        logger.debug("Worker %s has PID %s and is listening on port %d" % (self.id, self.worker_thread.pid, port))
+        self.port = int(status.split(" ")[-1])
+        logger.debug("Worker %s has PID %s and is listening on port %d"
+                     % (self.id, self.worker_process.pid, self.port))
 
         # Spawn a reader thread for worker log messages,
         # because stdio reads are blocking.
         self.__reader_thread = WorkerReader(self, daemon=True)
         self.__reader_thread.start()
 
-        conn = WorkerConnection(self.port)
+        conn = WorkerConnection(self.port, timeout=2)
 
         logger.debug("Syncing worker ID to %s" % repr(self.id))
-        res = conn.chat([Command("setid", id=self.id)])[0]
+        res = conn.ask(Command("setid", id=self.id))
         if res is None or not res.is_ack() or not res.is_success():
             logger.error("Failed to sync worker ID to `%s`" % self.id)
+            self.terminate()
             return False
 
-        logger.debug("Changing worker profile to `%s`" % self.__profile)
-        res = conn.chat([Command("useprofile", path=self.__profile)])[0]
-        if res is None or not res.is_ack() or not res.is_success():
-            logger.error("Worker failed to switch profile to `%s`" % self.__profile)
-            return False
+        if self.__profile is not None:
+            logger.debug("Changing worker profile to `%s`" % self.__profile)
+            res = conn.ask(Command("useprofile", path=self.__profile))
+            if res is None or not res.is_ack() or not res.is_success():
+                logger.error("Worker failed to switch profile to `%s`" % self.__profile)
+                self.terminate()
+                return False
 
-        logger.debug("Setting worker prefs to `%s`" % self.__prefs)
-        res = conn.chat([Command("setprefs", prefs=self.__prefs)])[0]
-        if res is None or not res.is_ack() or not res.is_success():
-            logger.error("Worker failed to set prefs to `%s`" % self.__prefs)
-            return False
+        if self.__prefs is not None:
+            logger.debug("Setting worker prefs to `%s`" % self.__prefs)
+            res = conn.ask(Command("setprefs", prefs=self.__prefs))
+            if res is None or not res.is_ack() or not res.is_success():
+                logger.error("Worker failed to set prefs to `%s`" % self.__prefs)
+                self.terminate()
+                return False
 
         return True
 
-    def quit(self):
+    def quit(self, timeout=5):
         """Send `quit` command to worker."""
-        return self.chat([Command("quit")])[0]
+        if self.is_running():
+            return self.ask(Command("quit"), timeout=timeout)
+        else:
+            logger.warning("Not quitting a stopped worker")
+            return None
 
     def terminate(self):
         """Signal the worker process to quit"""
         # The reader thread dies when the Firefox process quits
-        self.worker_thread.terminate()
+        self.worker_process.terminate()
 
     def kill(self):
         """Kill the worker process"""
-        self.worker_thread.kill()
+        self.worker_process.kill()
 
     def is_running(self):
         """Check whether the worker is still fully running"""
-        if self.worker_thread is None:
+        if self.worker_process is None:
             return False
-        return self.worker_thread.poll() is None
+        return self.worker_process.poll() is None
 
     def helper_threads(self):
         """Return list of helper threads"""
@@ -124,18 +143,30 @@ class XPCShellWorker(object):
                 return True
         return False
 
-    def chat(self, cmds):
-        """Send command or list of commands to worker and return response."""
-        global logger
+    def get_connection(self, timeout=None):
+        if not self.is_running() or self.port is None:
+            return None
+        return WorkerConnection(self.port, timeout=timeout)
 
-        connection = WorkerConnection(self.port)
-        reply = map(Response, connection.chat(cmds))
+    def ask(self, cmd, always_reconnect=False, retry=True, timeout=5):
+        """Send command or worker and return response"""
+        connection = self.get_connection(timeout=timeout)
+        if connection is None:
+            logger.warning("Asking stopped worker %s", self.id)
+            return None
+        reply = connection.ask(cmd, always_reconnect=always_reconnect, retry=retry)
         connection.disconnect()
+        return reply
 
-        if len(cmds) == 1:
-            return reply[0]
-        else:
-            return reply
+    def chat(self, cmds, always_reconnect=False, timeout=5):
+        """Send list of commands to worker and return responses"""
+        connection = self.get_connection(timeout=timeout)
+        if connection is None:
+            logger.warning("Chatting stopped worker %s", self.id)
+            return [None] * len(cmds)
+        replies = connection.chat(cmds, always_reconnect=always_reconnect)
+        connection.disconnect()
+        return replies
 
 
 class WorkerReader(Thread):
@@ -159,7 +190,7 @@ class WorkerReader(Thread):
         logger.debug('Reader thread started for worker %s' % self.worker.id)
 
         # This thread will automatically end when worker's stdout is closed
-        for line in iter(self.worker.worker_thread.stdout.readline, b''):
+        for line in iter(self.worker.worker_process.stdout.readline, b''):
             line = line.strip()
             if line.startswith("JavaScript error:"):
                 logger.error("JS error from worker %s: %s" % (self.worker.id, line))
@@ -178,7 +209,7 @@ class WorkerReader(Thread):
             else:
                 logger.critical("Invalid output from worker %s: %s" % (self.worker.id, line))
 
-        self.worker.worker_thread.stdout.close()
+        self.worker.worker_process.stdout.close()
         logger.debug('Reader thread finished for worker %s' % self.worker.id)
         del self.worker  # Breaks cyclic reference
 
@@ -272,7 +303,9 @@ class WorkerConnection(object):
         self.timeout = timeout
         self.s = None  # None here signifies closed connection and socket
 
-    def connect(self, reuse=False):
+    def connect(self, reuse=False, timeout=-1):
+        timeout = timeout if timeout is None or timeout >= 0 else self.timeout
+
         if self.s is not None:
             if reuse:
                 return
@@ -280,22 +313,19 @@ class WorkerConnection(object):
                 logger.warning("Worker connection is already open. Closing existing connection.")
                 self.close()
 
-        timeout_time = time.time() + self.timeout
-
+        timeout_time = time.time() + timeout if timeout is not None else None
         while True:
 
-            if time.time() >= timeout_time:
-                if self.s is not None:
-                    self.s.close()
-                self.s = None
-                raise Exception("Worker connect timeout")
+            if timeout_time is not None and time.time() >= timeout_time:
+                self.close()
+                raise socket.timeout("Worker connect timeout")
 
             try:
                 self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.s.settimeout(self.timeout)
                 # logger.error("***  %s" % self.s.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE))
                 # self.s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                 # logger.error("***  %s" % self.s.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE))
+                self.s.settimeout(timeout)
                 self.s.connect((self.host, self.port))
                 return
 
@@ -338,43 +368,49 @@ class WorkerConnection(object):
         self.shutdown()
         self.close()
 
-    def reconnect(self):
+    def reconnect(self, timeout=-1):
         if self.s is not None:
             self.disconnect()
-        self.connect()
+        self.connect(timeout=timeout)
 
-    def send(self, request):
+    def send(self, request, retry=True, timeout=-1):
+        timeout = timeout if timeout is None or timeout >= 0 else self.timeout
 
-        if type(request) is not str:
-            request = str(request)
+        request = str(request).strip() + "\n"
 
-        if not request.endswith("\n"):
-            request += "\n"
+        if timeout is None:
+            timeout = self.timeout
 
-        timeout_time = time.time() + self.timeout
         reconnected = False
-
+        timeout_time = time.time() + timeout if timeout is not None else None
         while True:
 
-            if time.time() >= timeout_time:
-                raise Exception("Sending worker request timeout")
+            if timeout_time is not None and time.time() >= timeout_time:
+                raise socket.timeout("Worker timeout while sending request")
 
             try:
-                self.s.send(request + "\n")
+                logger.debug("Sending request `%s` on port %d" % (request, self.port))
+                self.s.settimeout(timeout)
+                self.s.send(request)
                 break
 
             except Exception as err:
                 logger.warning("Error sending request: %s Reconnecting" % err)
                 self.reconnect()
                 reconnected = True
+                if not retry:
+                    break
 
         return reconnected
 
-    def receive(self, as_str=False):
+    def receive(self, raw=False, timeout=-1):
+        timeout = timeout if timeout is None or timeout >= 0 else self.timeout
+
         received = u""
 
         try:
             while not received.endswith("\n"):
+                self.s.settimeout(timeout)
                 r = self.s.recv(4096)
                 if len(r) == 0:
                     logger.warning("Empty read likely caused by peer closing connection")
@@ -390,54 +426,74 @@ class WorkerConnection(object):
             else:
                 raise err
 
-        if as_str:
-            return received.strip()
+        received = received.strip()
+        logger.debug("Received worker reply `%s` on port %d" % (received, self.port))
+
+        if raw:
+            return received
         else:
             return Response(received)
 
-    def ask(self, request, always_reconnect=False):
-        """Send single request to worker and return reply"""
+    def ask(self, request, always_reconnect=False, retry=True, timeout=-1):
+        """Send single request to worker and wait for and return reply"""
         if always_reconnect:
             self.reconnect()
         else:
-            self.connect(reuse=True)
-        self.send(request)
-        return self.receive()
+            self.connect(reuse=True, timeout=timeout)
+        reply = None
 
-    def chat(self, requests, always_reconnect=False):
+        while reply is None:
+            self.send(request, timeout=timeout)
+            reply = self.receive(timeout=timeout)
+            if reply is None and not retry:
+                break
+        return reply
+
+    def chat(self, requests, always_reconnect=False, timeout=-1):
         """Conduct synchronous chat over commands or verbatim requests"""
         if always_reconnect:
-            self.reconnect()
+            self.reconnect(timeout=timeout)
         else:
-            self.connect(reuse=True)
+            self.connect(reuse=True, timeout=timeout)
+        timeout = timeout if timeout is None or timeout >= 0 else self.timeout
+
         replies = []
         for request in requests:
             reply = None
+            timeout_time = time.time() + timeout if timeout is not None else None
             while reply is None:
-                self.send(request)
-                reply = self.receive()
+                if timeout_time is not None and time.time() >= timeout_time:
+                    raise socket.timeout("Worker timeout during chat")
+                self.send(request, timeout=timeout)
+                reply = self.receive(timeout=timeout)
             replies.append(reply)
         return replies
 
-    def async_chat(self, requests):
+    def async_chat(self, requests, timeout=-1):
         """
         Conduct asynchronous chat with worker.
         There is no guarantee that replies arrive in order of requests,
         hence all requests must be re-sent if the connection fails at
         any time.
         """
-        self.connect(reuse=True)
+        self.connect(reuse=True, timeout=timeout)
+        timeout_time = time.time() + timeout if timeout is not None else None
         while True:
+
+            if timeout_time is not None and time.time() >= timeout_time:
+                self.close()
+                raise socket.timeout("Worker async chat timeout")
+
             # Send all the requests
             for request in requests:
-                reconnected = self.send(request)
+                reconnected = self.send(request, timeout=timeout)
                 if reconnected:
-                    self.reconnect()
+                    self.reconnect(timeout=timeout)
                     continue
             # Listen for replies until done or connection breaks
             replies = []
             while True:
-                received = self.receive()
+                received = self.receive(timeout=timeout)
                 if received is None:
                     break
                 replies.append(received)
